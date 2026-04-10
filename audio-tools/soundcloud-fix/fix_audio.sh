@@ -1,44 +1,60 @@
 #!/bin/bash
 
-# Controleer of de juiste argumenten zijn meegegeven
+# --- Kleuren voor de output ---
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+function show_help() {
+    echo -e "${BLUE}Audio Seek Fixer${NC}"
+    echo "Repareert corrupte audio tijdlijnen (seeking) door de container te herbouwen."
+    echo ""
+    echo -e "Gebruik: $0 ${GREEN}<bron_map>${NC} ${GREEN}<doel_map>${NC}"
+    echo "Voorbeeld: $0 ./downloads ./muziek_gefixt"
+}
+
+# Controleer argumenten
 if [ "$#" -ne 2 ]; then
-    echo "Gebruik: $0 <bron_map> <doel_map>"
+    show_help
     exit 1
 fi
 
-# Zorg voor absolute paden om fouten te voorkomen
+# Controleer of ffmpeg aanwezig is
+if ! command -v ffmpeg &> /dev/null; then
+    echo -e "${RED}Fout: ffmpeg is niet geïnstalleerd.${NC}"
+    echo "Installeer het met: sudo apt install ffmpeg"
+    exit 1
+fi
+
 SOURCE_DIR=$(realpath "$1")
 TARGET_DIR=$(realpath "$2")
 
 # Check of bronmap bestaat
 if [ ! -d "$SOURCE_DIR" ]; then
-    echo "Fout: Bronmap '$SOURCE_DIR' bestaat niet."
+    echo -e "${RED}Fout: Bronmap '$SOURCE_DIR' bestaat niet.${NC}"
     exit 1
 fi
 
-echo "Start met verwerken van: $SOURCE_DIR"
-echo "Bestanden worden opgeslagen in: $TARGET_DIR"
-echo "-------------------------------------------"
+echo -e "${BLUE}--- Start Reparatie Process ---${NC}"
+echo "Bron: $SOURCE_DIR"
+echo "Doel: $TARGET_DIR"
 
-# Gebruik -print0 om problemen met spaties en vreemde tekens te voorkomen
+# Zoek bestanden en verwerk ze
+# -print0 zorgt voor veilige verwerking van spaties en speciale tekens
 find "$SOURCE_DIR" -type f \( -name "*.mp3" -o -name "*.m4a" -o -name "*.ogg" -o -name "*.opus" \) -print0 | while IFS= read -r -d '' FILE; do
     
-    # Bepaal het relatieve pad op een veiligere manier
     RELATIVE_PATH="${FILE#$SOURCE_DIR/}"
-    
-    # Bepaal de doel-bestandsnaam en de doelmap
     DEST_FILE="$TARGET_DIR/$RELATIVE_PATH"
     DEST_DIR=$(dirname "$DEST_FILE")
     
-    # Maak de benodigde submappen aan
     mkdir -p "$DEST_DIR"
     
-    echo "Repareren: $RELATIVE_PATH"
+    echo -e "${GREEN}Verwerken:${NC} $RELATIVE_PATH"
     
-    # Voer ffmpeg uit met dubbele quotes om alle tekens in de bestandsnaam te beschermen
+    # Herbouw de container zonder her-coderen (stream copy)
     ffmpeg -loglevel error -i "$FILE" -map_metadata 0 -c copy "$DEST_FILE" -y </dev/null
 
 done
 
-echo "-------------------------------------------"
-echo "Klaar! Controleer de map: $TARGET_DIR"
+echo -e "${BLUE}--- Klaar! ---${NC}"
