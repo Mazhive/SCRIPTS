@@ -1,0 +1,7 @@
+#!/bin/bash
+FILE="$1"
+NAME=$(basename "$FILE" .iso)
+DIR="$HOME/mnt/iso/$NAME"
+mkdir -p "$DIR"
+fuseiso "$FILE" "$DIR"
+xdg-open "$DIR"
