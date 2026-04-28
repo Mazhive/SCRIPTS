@@ -22,14 +22,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "Voorbeeld: /mnt/SteamLibrary/Photogrammetry_Pipeline"
     read -p "Werkmap Pad: " WORK_DIR
 
-    # Opslaan zonder trailing slashes om pad-fouten te voorkomen
     echo "GIT_DIR=${GIT_DIR%/}" > "$CONFIG_FILE"
     echo "WORK_DIR=${WORK_DIR%/}" >> "$CONFIG_FILE"
     echo "✅ Configuratie opgeslagen in $CONFIG_FILE"
     echo "--------------------------------------------------"
 fi
 
-# Laad de variabelen
 source "$CONFIG_FILE"
 
 # --- PAD LOGICA ---
@@ -37,23 +35,17 @@ CURRENT_DIR=$(pwd)
 CLEAN_WORK_DIR="${WORK_DIR%/}"
 CLEAN_GIT_DIR="${GIT_DIR%/}"
 
-# Check of de huidige map binnen de werkmap valt
 if [[ "$CURRENT_DIR" == "$CLEAN_WORK_DIR"* ]]; then
-    # Bepaal relatief pad t.o.v. de werkmap
     RELATIVE_PATH=${CURRENT_DIR#$CLEAN_WORK_DIR}
-    RELATIVE_PATH=${RELATIVE_PATH#/} # Verwijder leidende slash
-    
-    # Pak de eerste mapnaam als projectnaam
+    RELATIVE_PATH=${RELATIVE_PATH#/}
     PROJECT_NAME=$(echo "$RELATIVE_PATH" | cut -d'/' -f1)
     
-    # Als we direct in de root van de werkmap staan, gebruik de mapnaam zelf
     if [ -z "$PROJECT_NAME" ]; then
         PROJECT_NAME=$(basename "$CLEAN_WORK_DIR")
         SOURCE_WORK="$CLEAN_WORK_DIR"
     else
         SOURCE_WORK="$CLEAN_WORK_DIR/$PROJECT_NAME"
     fi
-    
     TARGET_GIT="$CLEAN_GIT_DIR/$PROJECT_NAME"
 else
     echo "❌ Je bent niet in een bekende werkmap!"
@@ -63,13 +55,12 @@ else
 fi
 
 echo "=================================================="
-echo "🤖 Mazhive Git Manager v2"
+echo "🤖 Mazhive Git Manager v2.1"
 echo "📂 Project: $PROJECT_NAME"
 echo "🛠️  Bron:    $SOURCE_WORK"
 echo "📦 Doel:    $TARGET_GIT"
 echo "=================================================="
 
-# --- ACTIE MENU ---
 echo "1) UPLOAD (Alles naar GitHub)"
 echo "2) DOWNLOAD (Alles van GitHub)"
 echo "3) RESET CONFIG (Paden opnieuw instellen)"
@@ -77,36 +68,36 @@ read -p "Keuze [1-3]: " CHOICE
 
 case $CHOICE in
     1)
-        # Check of Bron en Doel verschillend zijn om rsync-lussen te voorkomen
         if [ "$SOURCE_WORK" != "$TARGET_GIT" ]; then
             echo "🔄 Synchroniseren naar kluis..."
             if [ ! -d "$TARGET_GIT" ]; then mkdir -p "$TARGET_GIT"; fi
-            rsync -av --delete \
-                --exclude='.git/' \
-                --exclude='projects/' \
-                --exclude='MeshroomCache/' \
-                --exclude='bak/' \
-                "$SOURCE_WORK/" "$TARGET_GIT/"
+            rsync -av --delete --exclude='.git/' --exclude='projects/' --exclude='MeshroomCache/' --exclude='bak/' "$SOURCE_WORK/" "$TARGET_GIT/"
         else
             echo "ℹ️  Bron en Doel zijn gelijk. Rsync overgeslagen."
         fi
 
         cd "$TARGET_GIT" || exit
 
-        # Git initialisatie check
+        # --- VERBETERDE REMOTE CHECK ---
         if [ ! -d ".git" ]; then
-            echo "⚠️  Geen .git administratie gevonden."
-            read -p "Nieuwe repo starten? [y/n]: " START_GIT
-            if [[ "$START_GIT" =~ ^[Yy]$ ]]; then
-                git init
-                read -p "GitHub SSH URL (git@github.com:Mazhive/repo.git): " REPO_URL
+            echo "⚠️  Geen .git gevonden. Initialiseren..."
+            git init
+        fi
+
+        # Controleer of 'origin' bestaat
+        if ! git remote | grep -q "origin"; then
+            echo "❓ Geen GitHub koppeling (origin) gevonden voor dit project."
+            read -p "Voer de GitHub SSH URL in (bijv. git@github.com:Mazhive/$PROJECT_NAME.git): " REPO_URL
+            if [ ! -z "$REPO_URL" ]; then
                 git remote add origin "$REPO_URL"
+                echo "✅ Remote 'origin' toegevoegd."
             else
+                echo "❌ Geen URL ingevoerd. Push afgebroken."
                 exit 1
             fi
         fi
 
-        # Remote check (HTTPS naar SSH fix)
+        # Forceer SSH als het HTTPS is
         REMOTE_URL=$(git remote get-url origin 2>/dev/null)
         if [[ $REMOTE_URL == https://* ]]; then
             echo "🔄 Remote staat op HTTPS. Omzetten naar SSH..."
@@ -117,8 +108,14 @@ case $CHOICE in
         echo "➕ Toevoegen en committen..."
         git add .
         git status -s
-        read -p "Commit bericht: " MSG
-        git commit -m "${MSG:-Auto-update $(date +'%Y-%m-%d %H:%M')}"
+        
+        # Check of er wijzigingen zijn om te committen
+        if git diff-index --quiet HEAD --; then
+            echo "☕ Niets om te committen, alles is gelijk."
+        else
+            read -p "Commit bericht: " MSG
+            git commit -m "${MSG:-Auto-update $(date +'%Y-%m-%d %H:%M')}"
+        fi
         
         echo "🚀 Pushen naar GitHub..."
         git push origin $(git branch --show-current)
@@ -126,19 +123,23 @@ case $CHOICE in
 
     2)
         cd "$TARGET_GIT" || exit
-        echo "📥 Gegevens ophalen van GitHub..."
-        git pull origin $(git branch --show-current) --rebase
-        
-        if [ "$SOURCE_WORK" != "$TARGET_GIT" ]; then
-            echo "🔄 Terugzetten naar werkmap..."
-            rsync -av --exclude='.git/' "$TARGET_GIT/" "$SOURCE_WORK/"
+        if git remote | grep -q "origin"; then
+            echo "📥 Gegevens ophalen van GitHub..."
+            git pull origin $(git branch --show-current) --rebase
+            
+            if [ "$SOURCE_WORK" != "$TARGET_GIT" ]; then
+                echo "🔄 Terugzetten naar werkmap..."
+                rsync -av --exclude='.git/' "$TARGET_GIT/" "$SOURCE_WORK/"
+            fi
+            echo "✨ Klaar!"
+        else
+            echo "❌ Kan niet downloaden: geen 'origin' geconfigureerd."
         fi
-        echo "✨ Klaar!"
         ;;
 
     3)
         rm "$CONFIG_FILE"
-        echo "✅ Configuratie verwijderd. Herstart het script om nieuwe paden in te stellen."
+        echo "✅ Configuratie verwijderd."
         ;;
     *)
         echo "❌ Ongeldige keuze."
