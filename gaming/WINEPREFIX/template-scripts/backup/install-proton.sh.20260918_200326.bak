@@ -1,0 +1,111 @@
+#!/bin/bash
+# install-proton.sh — Installeert de nieuwste GE-Proton voor de game-launchers.
+#
+# Downloadt GE-Proton van GitHub (GloriousEggroll/proton-ge-custom) en pakt
+# het uit naar $HOME/.config/heroic/tools/proton/ — dezelfde map die
+# game-common.sh scant (en die Heroic ook gebruikt).
+#
+# Gebruik:
+#   install-proton.sh                 → installeer de nieuwste release
+#   PROTON_VERSION=GE-Proton11-7 \
+#       install-proton.sh             → die specifieke versie installeren
+#   install-proton.sh --pin GE-Proton11-7   → idem
+#
+# Na installatie maakt het script een GUI-snelkoppeling aan:
+#   ~/.local/share/applications/InstallProton.desktop
+
+set -euo pipefail
+
+API_URL="https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+FALLBACK_VERSION="GE-Proton11-7"
+DEST_INSTALL_ROOT="$HOME/.config/heroic/tools/proton"
+DEST_DESKTOP="$HOME/.local/share/applications/InstallProton.desktop"
+TMP_DIR="${TMPDIR:-/tmp}/${$}_proton"
+
+_log()  { echo " [install-proton] $*"; }
+_fail() { echo " [install-proton] FOUT: $*" >&2; exit 1; }
+
+# ── Argumenten / omgevingspin ─────────────────────────────────
+VERSION="${PROTON_VERSION:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pin)
+      [ $# -ge 2 ] || _fail "--pin vereist een versie (bijv. GE-Proton11-7)"
+      VERSION="$2"; shift 2 ;;
+    --help|-h)
+      echo "Gebruik: install-proton.sh [--pin GE-ProtonX-Y]"
+      echo "         (of omgevingsvariabele PROTON_VERSION=GE-ProtonX-Y)"
+      exit 0 ;;
+    *) _fail "Onbekend argument: $1 (zie --help)" ;;
+  esac
+done
+
+# ── Architectuur ──────────────────────────────────────────────
+case "$(uname -m)" in
+  x86_64)   ASSET_ARCH="x86_64" ;;
+  aarch64)  ASSET_ARCH="aarch64" ;;
+  *) _fail "Niet-ondersteunde architectuur: $(uname -m)" ;;
+esac
+_log "Architectuur: $ASSET_ARCH"
+
+# ── Versie bepalen ────────────────────────────────────────────
+if [ -z "$VERSION" ]; then
+  _log "Opvragen van de nieuwste GE-Proton release (GitHub)…"
+  if command -v curl >/dev/null 2>&1; then
+    VERSION="$(curl -s --max-time 30 "$API_URL" | grep -E '"tag_name"' | head -1 \
+      | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  fi
+  if [ -z "$VERSION" ] && command -v wget >/dev/null 2>&1; then
+    VERSION="$(wget -qO- --timeout=30 "$API_URL" 2>/dev/null \
+      | grep -E '"tag_name"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  fi
+  [ -n "$VERSION" ] || VERSION="$FALLBACK_VERSION"
+  _log "Nieuwste release: $VERSION (fallback: $FALLBACK_VERSION)"
+fi
+[ -n "$VERSION" ] || _fail "Geen versie bepaald."
+
+TAG="${VERSION#v}"
+ASSET="${VERSION}-${ASSET_ARCH}.tar.gz"
+URL="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/${TAG}/${ASSET}"
+
+DEST_DIR="$DEST_INSTALL_ROOT/$VERSION"
+if [ -x "$DEST_DIR/proton" ]; then
+  _log "GE-Proton '$VERSION' is al geïnstalleerd op: $DEST_DIR"
+else
+  _log "Downloaden: $URL"
+  mkdir -p "$DEST_INSTALL_ROOT" "$TMP_DIR"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 3 --connect-timeout 30 -o "$TMP_DIR/$ASSET" "$URL" \
+      || _fail "Download mislukt (curl). Controleer je internetverbinding."
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$TMP_DIR/$ASSET" "$URL" || _fail "Download mislukt (wget)."
+  else
+    _fail "Zowel curl als wget ontbreekt; installeer minimaal één daarvan."
+  fi
+
+  _log "Uitpakken naar: $DEST_DIR"
+  mkdir -p "$DEST_DIR"
+  tar -xzf "$TMP_DIR/$ASSET" -C "$DEST_INSTALL_ROOT" || _fail "Uitpakken mislukt."
+  rm -rf -- "$TMP_DIR"
+
+  # version-bestand schrijven (Heroic/scripts herkennen dit formaat)
+  TS="$(date +%s)"
+  [ -f "$DEST_DIR/version" ] || printf '%s %s\n' "$TS" "$VERSION" > "$DEST_DIR/version"
+
+  _log "GE-Proton geïnstalleerd op: $DEST_DIR"
+fi
+
+# ── GUI-snelkoppeling (InstallProton) ────────────────────────
+SCRIPT_ABS="$(realpath -s -- "$0")"
+mkdir -p "$(dirname "$DEST_DESKTOP")"
+cat > "$DEST_DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=InstallProton
+Comment=Update/installeer GE-Proton voor de game-launchers
+Exec="$SCRIPT_ABS"
+Terminal=true
+Categories=System;
+EOF
+_log "GUI-snelkoppeling aangemaakt: $DEST_DESKTOP"
+_log "Klaar. Start nu het bijbehorende game-script opnieuw."
