@@ -1,0 +1,55 @@
+#!/bin/bash
+# tools/gamepad.off.sh — generieke undotool: zet ELKE prefix terug naar
+# toetsenbordmodus (geen padmodus). Losse handmatige helper, géén onderdeel
+# van launcher of workflow; geen root nodig.
+#
+# Ongedaan maken van "cyberpunk_gamepad.sh on" (of elke andere padmodus die
+# dezelfde marker/.pad-mode + winebus "Enable SDL"=1 gebruikt) in één stap:
+#   1. het .pad-mode-merkbestand wordt verwijderd,
+#   2. winebus "Enable SDL" krijgt overal 0 (de bewezen toetsenbordstand,
+#      gelijk aan wat de drift-guard-hook disable_winebus doet).
+#
+# Idempotent en onschadelijk: prefixen zonder marker/handgedragen krijgen
+# zónder gedram alleen een (her)bevestiging van SDL=0.
+#
+# Gebruik:
+#   tools/gamepad.off.sh            – alle prefixen terug naar toetsenbordmodus
+#
+# Env-overschrijvingen: GAMEPREFIXES, WINE.
+set -u
+
+ROOT="${GAMEPREFIXES:-$HOME/GAMEPREFIXES}"
+WINE="${WINE:-$(command -v wine || echo wine)}"
+WINEBUS='HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebus'
+
+say()  { printf '%s\n' "$*"; }
+
+[[ -d "$ROOT" ]] || { say "geen prefixroot: $ROOT"; exit 0; }
+
+changed=0
+found=0
+for dir in "$ROOT"/*/; do
+  pfx="$dir/pfx"
+  [[ -d "$pfx/drive_c" ]] || continue
+  found=$((found+1))
+  marker="$dir/.pad-mode"
+  was_gp=$([ -f "$marker" ] && echo JA || echo nee)
+  rm -f "$marker"
+
+  if WINEPREFIX="$pfx" "$WINE" reg add "$WINEBUS" /v 'Enable SDL' \
+       /t REG_DWORD /d 0 /f >/dev/null 2>&1; then
+    cur="$(WINEPREFIX="$pfx" "$WINE" reg query "$WINEBUS" 2>/dev/null \
+           | grep -i 'Enable SDL' | tr -s ' ' | sed 's/^[[:space:]]*//')"
+    say "  $dir   modus: $was_gp -> toetsenbordmodus   [Enable SDL: ${cur:-0x0}]"
+  else
+    say "  $dir   FOUT bij SDL=0 zetten (prefix/registry ontoegankelijk)"
+  fi
+  if [ "$was_gp" = "JA" ]; then changed=$((changed+1)); fi
+  WINEPREFIX="$pfx" wineserver -w 2>/dev/null || true
+done
+
+if [ "$found" -eq 0 ]; then
+  say "geen prefixen gevonden onder $ROOT."
+else
+  say "${found} prefix(en) gecontroleerd; ${changed} stond/en in padmodus en is/zijn teruggezet."
+fi
