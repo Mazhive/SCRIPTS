@@ -34,17 +34,49 @@ export STEAM_APPID="1091500"
 #      bundled d3d12on7 (AV-crash c0000005). Hook herstelt nu win10
 #      (native D3D12-route via vkd3d-proton, zoals referentie). Re-provision
 #      nodig → v12.
-export SCRIPT_VERSION="12"
+# v13: disable_winebus-hook: Wacom-tablet als /dev/input/js0 joystick →
+#      game ziet "controller" en negeert muis+toetsenbord (bewezen: Space
+#      doet niks op de startscreen). Enable SDL=0 + DisableHidraw=1 verhielp
+#      het (echte input-fix; gamescope noch compositor had effect). +
+#      install_gamescope-hook (detect/install nested compositor; wrap alleen
+#      bij Wayland-sessies via GAME_GAMESCOPE=1).
+# v14: disable_winebus verwijderd — die schakelde óók echte gamepads uit.
+#      Vervangen door wacom-detect: waarschuwt + vraagt (Ja/Nee) om de
+#      Wacom-kabel los te trekken. De bus/tablet kan gewoon aanblijven.
+#      NB: bij deze overgang vielen vcrun2019/PIN/gamescope weg (regressie).
+# v15: wacom-detect-handigheid: interactie nu via tools/ask-yesno.sh
+#      (TTY/kdialog/zenity); GUI-ready via WACOM_CHOICE=ja|nee.
+# v16: werkende v13-voorzieningen teruggezet (install_vcrun2019, PROTON_PIN,
+#      GAME_GAMESCOPE) én wacom-detect behouden — géén disable_winebus.
+# v17: oorzaak + fix bewezen. "Wacom los trekken" is nooit genoeg: de eigen
+#      toetsenbord-js (17ef:6099) blijft áls joystick bestaan en de game zet
+#      dan toetsenbord uit (getest: Space dood met alleen keyboard-js1).
+#      Fix = winebus "Enable SDL"=0 (hidraw blijft aan) → toetsenbord EN
+#      gamepad werken; SDL-env-hints doen niets voor deze game (getest).
+#      Test D bewees daarna dat de Wacom onschuldig is (SDL=0 + Wacom erin =
+#      werkt, óók als de keuze "Nee" was). Conclusie: de wacom-detect-flow
+#      is niet meer nodig — de fix zit stil in de provision-hooks.
+#      Verse prefix nodig → v17.
+export SCRIPT_VERSION="17"
 # Bewezen werkend voor deze game; als deze ontbreekt valt _detect_proton
 # terug op de hoogste GE-Proton / Steam-Proton / umu-run.
 export PROTON_PIN="GE-Proton11-7"
 # Plan B (v11): officiële redist primair i.p.v. winetricks; zie hook-module.
 export VC_RUNTIME_METHOD="redist"
-# Geen 'export': PROVISION_HOOKS mag een array zijn, en bash-arrays
-# overleven export niet naar subprocessen. Dat is hier geen probleem: dit
-# script sourcet game-common.sh (game_init leest de array in dit proces).
-PROVISION_HOOKS=("install_vcrun2019")
+# Gamepads blijven werken; fix zit in de provision-hooks (stil, geen prompt).
+# GAME_GAMESCOPE: launch wrappen via gamescope bij Wayland-sessies.
+export GAME_GAMESCOPE="1"
+# Hooks bij provision: vcrun2019 (verplicht), gamescope (detect/install) en
+# disable_winebus (inputfix — "Enable SDL"=0, hidraw/blijft, bewezen fix).
+# Pre-launch-hook: DITZELFDE disable_winebus draait bij elKAAR start als
+# drift-guard, zodat de bekende-werkende staat (keyboard) altijd gegarandeerd
+# is, ook als de winebus-registry ooit weer wordt omgezet. Idempotent + snel.
+# Eerder zat hier wacom-detect als pre-launch-hook; eruit na Test D (SDL=0 +
+# Wacom erin werkt) — de Wacom deed niet mee. wacom-detect.sh blijft als
+# herbruikbare module voor andere hosts/games.
+PROVISION_HOOKS=("install_gamescope" "install_vcrun2019" "disable_winebus")
+PRE_LAUNCH_HOOKS=("disable_winebus")
 
-# shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../game-core/game-common.sh"
 game_main "$@"
+
