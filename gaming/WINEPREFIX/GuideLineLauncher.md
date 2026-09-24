@@ -20,6 +20,25 @@ Prefixen op de NFS-share (zoals de oude `pfx.noa/`, `pfx.djuga/` mapjes) geven
 bovendien lock-problemen onder Wine. Daarom: game lees je van de share,
 de prefix wordt lokaal eigendom van de speler.
 
+## Richtlijnen: hoe een launcher afleiden
+
+Deze regels zijn de kern van het bouwen — ze gelden voor **elke** game, met of zonder gegeven prefix.
+
+1. **Gegeven prefix = analyse, nooit kopiëren.**  
+   Een share-prefix (`movedprefixes/`, `protonprefix/`) is *alleen* onderzoeksmateriaal. Je begint **altijd** met een schone, verse lokale prefix (`wineboot -i`). Kopiëren/linken is verboden.
+
+2. **Start minimaal.**  
+   De standaard is: kale wine-prefix + de juiste Windows-versie (`winecfg -v win10` of `win7`). Alleen wat de game laat *werken*, mag erbij.
+
+3. **Voeg componenten één voor één toe en test na elke stap.**  
+   Nooit de hele gegeven prefix in één keer "nachtrellen". Toevoegen → testen (launch → log + exitcode) → volgende. Alleen wat bewezen nodig is, blijft.
+
+4. **Gegeven prefixen bevatten overtollige rommel.**  
+   Ze zijn het resultaat van een proces van "bijvullen tot de game het doet". Wat erin staat, is **niet** vanzelfsprekend nodig. Historische laagjes (oude Proton-versies, overbodige hooks, verkeerde Windows-versie) zitten er vaak nog in.
+
+5. **Minimalisme is het doel.**  
+   Vaak is een kale wine-prefix met de juiste Windows-versie al genoeg (zoals Automation Empire). Over-engineering breekt simpele games.
+
 ### Referentie-mappen (`movedprefixes/`, `protonprefix/`) — géén runtime-afhankelijkheid
 
 Op de share staan (nog) oude prefix-mappen (`WINEPREFIX/movedprefixes/`,
@@ -29,7 +48,7 @@ appid's) een game nodig heeft. Ze worden **niet** gekopieerd, gelinkt of als
 fallback aangeroepen door de scripts, en ze zullen op een gegeven moment van de
 server **verwijderd** worden. Elk game-script moet dus blijven werken als deze
 mappen niet meer bestaan — dat is ook expliciet getest (verse prefix + Proton
-richt zelf alles in, zie per-game-notities hieronder).
+richt zelf alles in). Zie de richtlijnen hierboven voor de analyse-werkwijze.
 
 ## Directory-overzicht
 
@@ -45,7 +64,8 @@ NFS-share (gedeeld, read-mostly)
          ├─ game-launchers/
          │  ├─ angry-birds.sh        → dun script: wine-mode, geen Proton nodig
          │  ├─ cyberpunk2077.sh      → dun script: Proton-runner + install_vcrun2019-hook
-         │  └─ citiesskylines.sh     → dun script: Proton-runner, geen hooks nodig
+         │  ├─ citiesskylines.sh     → dun script: Proton-runner, geen hooks nodig
+         │  └─ automationempire.sh   → standalone: kale wine + win10, geen hooks/libs (minimaal recept)
          └─ tools/
             └─ install-proton.sh     → generiek: installeert/update GE-Proton voor alle games
 
@@ -137,15 +157,45 @@ export PROVISION_HOOKS=("install_vcrun2019" "install_vkd3d")
 
 De core definieert de hooks; het per-game script kiest welke het nodig heeft.
 
-## Per-game notities
+## Exceptions-catalogus (wat je kunt toevoegen, met signaal)
 
-| Game                  | Renderer         | Opmerking |
-|-----------------------|-------------------|-----------|
-| **Angry Birds**       | OpenGL 2          | Wine-mode (geen Proton). Runtimes (`msvcp100.dll`, `msvcr100.dll`) liggen al naast de exe. Geen hooks nodig. |
-| **Cyberpunk 2077**    | DirectX 12        | Proton-runner (`PROTON_PIN=GE-Proton11-7`, `STEAM_APPID=1091500`). Proton installeert dxvk/vkd3d/nvapi zelf bij de eerste start. Vereist wel de hook `install_vcrun2019` (VC++ 2019, zie `_CommonRedist` in de gamemap) — zonder deze hook stopt de game direct en stil. Bevestigd werkend: hoofdmenu bereikt + toetsenbord. Input: winebus `Enable SDL=0` (pre-launch-hook `disable_winebus`, drift-guard) — de game negeert toetsenbord zodra hij een joystick/controller ziet; SDL-werkenden breken het toetsenbord in álle varianten (getest). **Gamepad:** werkt volledig op OS-niveau (knoppen/assen bewezen via evdev), maar komt in deze opzet NIET in de game: de Xbox-pad heeft geen hidraw-node (xpad-driver) en `/dev/hidraw*` is root-only → Wine kan geen XInput-controller aanbieden; Cyberpunk leest sole XInput en niet de SDL/DInput-joystick. Pad-in-game vereist dus óf éénmalige root (udev-rule 045e:028e op hidraw) óf SteamInput-overlay. |
-| **Cities: Skylines**  | DirectX 11 (Unity)| Non-Steam MEX-crack repack. Proton-runner (`PROTON_PIN=GE-Proton11-7`, `STEAM_APPID=255710` — matcht de crack's eigen `MEX.ini`). Enige hook: `install_gamescope` (host-tool voor de wrap; skipt als gamescope al aanwezig is of als er geen root te regelen valt). Verder geen prefix-hooks nodig (game brengt eigen Mono-runtime mee, geen `_CommonRedist`). **Platformfix nodig op AMD/Wayland** (zie werklog): gamescope-wrap (`GAME_GAMESCOPE=1`; res auto-gedetecteerd via xrandr of te pinnen met `GAME_GAMESCOPE_RES="WxH"`) + `dxvk.conf` in de gamemap (`numCompilerThreads=4`, `enableGraphicsPipelineLibrary=True`). Bevestigd werkend: blauwe + witte logo, hoofdmenu, nette eigen afsluiting. Op een NVIDIA/GTX-1070-machine draait hetzelfde script zonder wrap. |
-| **Ori: Blind Forest** | DirectX 11 (Unity 5)| CODEX-repack (**origineel**, appid 261570 via `codex.ini`), 32-bit `ori.exe`, Unity **Mono** (`ori_Data/Mono`). Proton-runner (`PROTON_PIN=GE-Proton11-7`). Gamescope-wrap aan — de aanwezige `ori_d3d11.log` toont `Exclusive FS: 1` (zelfde Wayland-stall); res auto-detect. Saves: `AppData\Roaming\Steam\CODEX\261570\remote` (prefix-lokaal). Input: ontworpen rond de controller (XInput **en** DirectInput), maar KBM volwaardig (menu-remap via `KeyRebindings.txt`, `%localappdata%`). DirectInput-mapping v/d originele build is berucht gebroken en niet-Xbox-paden triggers/sticks; winebus-joysticks mijden (default `Enable SDL=0`). |
-| **Ori: Will of the Wisps** | DirectX 11 (Unity)| ElAmigos-repack met **twee builds**: UWP/GDK-rest (launch-grdk.bat/wdapp — alleen Windows) én de standalone **PC-build** `oriandthewillofthewisps-pc.exe` (Unity **IL2CPP**, géén Mono/emu-dlls). Proton-runner (`PROTON_PIN=GE-Proton11-7`, `STEAM_APPID=1057090`). Gamescope-wrap aan (DXVK-log: `Exclusive FS: 1`), res auto-detect. Saves: `AppData\LocalLow\Moon Studios GmbH\Ori and the Will of the Wisps`. Bevestigd werkend: boot→menu direct, idle ~5% CPU, nette afsluiting. Input: **XInput-only** en schakelt automatisch naar controllermodus zodra een Xinput-pad aanwezig is (KB dan ondergeschikt); KBM is de door Microsoft aanbevolen route. |
+| Onderdeel / uitzondering | Hook / optie | Wanneer nodig (signaal in log/game) |
+|--------------------------|--------------|-------------------------------------|
+| Windows-versie win7 | `VC_RUNTIME_WINVER="win7"` of `install_win7.sh` | Game crasht op win10 (bv. "Invalid window handle" na swapchain) |
+| VC++ 2019 runtime | `install_vcrun2019` (methode `winetricks`/`redist`) | `c000007b`, DLL-not-found `msvcp140`/`vcruntime140`, `_CommonRedist/vcredist` in gamemap |
+| DirectX 9 / d3dx9 / XAudio / XInput legacy | `install_d3dx9` | Oude D3D9-games, Unity < 2017, "d3dx9_43.dll not found" |
+| .NET Framework 4.8 | `install_dotnet48` | Launcher/installer vereist .NET, crash met CLR-fout |
+| Core fonts (Tahoma, Verdana, etc.) | `install_corefonts` | Tekst ontbreekt/vierkanten in menu's |
+| Proton (D3D11/12 via DXVK/VKD3D) | `PROTON_ENABLED=1` + `PROTON_PIN` | Renderer = D3D11/12, Vulkan/ICD nodig, ProtonFixes database |
+| Eigen DXVK in prefix | `install_dxvk` | Specifieke DXVK-versie nodig, Proton's graft breekt game |
+| VKD3D (D3D12→Vulkan) | `install_vkd3d` | D3D12-games zonder Proton, of Proton's VKD3D te oud |
+| gamescope-wrap (Wayland exclusive-FS fix) | `GAME_GAMESCOPE=1` + `install_gamescope` | AMD/Wayland: zwart scherm, focus-stall, "Exclusive FS: 1" in DXVK-log |
+| toetsenbord fix (joystick-negering) | `disable_winebus` (pre-launch) | Game negeert toetsenbord zodra joystick-device gezien wordt |
+| Wacom/joystick interactief uitsluiten | `wacom-detect` | Specifieke hardware die als joystick gemaskeerd wordt |
+| Gamepad XInput via root (udev/hidraw) | `tools/pad-xinput-on.sh` | XInput-only game, pad werkt op OS (evdev) maar niet in-game |
+| Overlays (MangoHud/vkBasalt) uitzetten | default `GAME_KEEP_OVERLAYS=0` | FPS-meter/HUD breekt Vulkan-init (Cyberpunk, AE, andere) |
+| Steam-appid / emu (CODEX/MEX/Goldberg) | `STEAM_APPID`, `tools/steam-nonsteam-fix.sh` | `steam_appid.txt` in gamemap, crack/emu DLL's (`steam_api64.dll`, `steamclient64.dll`, etc.) |
+
+## Onbekende game **zonder** prefix: bouwstappen
+
+1. **Begin met het dunste template** (AngryBirds-vorm): `PROTON_ENABLED=0`, lege `PROVISION_HOOKS`, `CREATE_DESKTOP_SHORTCUT=1`.
+2. **Snelclassificatie** van de game-map:
+   - **Renderer**: OpenGL/D3D9 → plain wine; D3D11/12 → Proton. Check via `file` op exe, `strings` op DLL's, of `vulkaninfo`/`apiVersion` scan.
+   - **Engine**: Unity (Mono/IL2CPP), Unreal, custom → beïnvloedt Mono/IL2CPP runtime, managed DLL's.
+   - **Crack/emu**: CODEX/MEX/Goldberg/STEAMWORKS → `STEAM_APPID` + DLL-overrides voor emu-DLL's.
+   - **Redists**: `_CommonRedist/` aanwezig? → VC++/DirectX/.NET hooks waarschijnlijk nodig.
+3. **Symptoom → fix tabel** (één variabele per run wijzigen, testen na elke stap):
+   - `exit c000007b` / DLL-not-found msvcp → `install_vcrun2019`
+   - stil na swapchain / "Invalid window handle" → `install_win7` / win7, of Proton-versie
+   - zwart scherm + exclusive-FS log → `GAME_GAMESCOPE=1` + `install_gamescope`
+   - `steam_api64.dll` load fail / "No access to memory location" → emu-DLL-overrides + overlays uit
+   - toetsenbord doet niks → `disable_winebus` (pre-launch)
+   - Vulkan init crash met FPS-meter → overlays uit (`GAME_KEEP_OVERLAYS=0` al default)
+4. **Werkwijze**: na elke wijziging → launch → log + exitcode analyseren → volgende component. Precies zoals de Automation Empire-procedure: begin minimaal, bouw één voor één.
+
+## Per-game recepten
+
+Concrete per-game recepten (config, hooks, exceptions) staan **in de launcher-scripts zelf** als commentaar, en in de werklog hieronder — niet in deze gids. Dit houdt de gids generiek en herbruikbaar.
 
 
 ## Steam non-Steam-fusie (het "Forza"-probleem) — samenvatting
@@ -428,6 +478,7 @@ per-game hack.
   (udev-rule weg + xpad terug; idempotent). Worden bewust NIET door
   launchers aangeroepen en doen géén SDL/marker-schoonmaak (die blijft bij
   de launch-time guard `disable_winebus`). Uiteindelijk oproepbaar via GUI.
+- ✅ **AUTOMATION EMPIRE (2026-09, afgerond):** `automationempire.sh` — standalone plain-wine launcher (geen core, geen hooks). Kale wine-prefix + `winecfg -v win10` + CODEX `steam_api64.dll` overrides. Referentie-prefix (`movedprefixes/1112790`) bevatte overtollige componenten (Proton/DXVK v2.x, win7, vcrun2019, d3dx9, Steam registry, RUNASADMIN) — **bewezen NIET nodig**. Les: minimalisme afleiden, niet referentie naspelen. Overlays/FPS-meter breekt de game → overlays standaard uit.
 
 ### Volgende stappen
 

@@ -499,6 +499,21 @@ _neutralize_xalia() {
   :
 }
 
+# ── SDL3 dynapi-warning neutraliseren ────────────────────────
+# Sommige games laden SDL3.dll-builtin uit de Wine-prefix i.p.v. de libSDL3
+# die de game meebrengt; dat geeft "Failed loading SDL3 library" (onschadelijk,
+# SDL3 valt terug op zijn ingesloten API) of op sommige hosts een harde
+# "Failed to initialize internal SDL dynapi … abort" (launch breekt).
+# SDL3_DYNAMIC_API=0 forceert de stabiele ingesloten route → warning weg.
+# GUI-override GUI_SDL3_DYNAMIC_API_OFF heeft voorrang op het per-script
+# GAME_SDL3_DYNAMIC_API_OFF; default = fallback AAN.
+_neutralize_sdl3_dynapi() {
+  local off="${GUI_SDL3_DYNAMIC_API_OFF:-${GAME_SDL3_DYNAMIC_API_OFF:-1}}"
+  [ "$off" = "1" ] || return 0
+  export SDL3_DYNAMIC_API=0
+  :
+}
+
 # ── Game starten ─────────────────────────────────────────────
 # Bepaalt of deze run via gamescope moet lopen. GUI-override:
 # GUI_GAMESCOPE="1|0" heeft voorrang op GAME_GAMESCOPE, zodat de checkbox
@@ -549,9 +564,155 @@ _gscope_argv() {
   _log "Gamescope-wrap actief (Wayland-sessie): $(command -v gamescope) res=${_gcalc:-auto}"
 }
 
+# ── Native GUI-checkboxes (blackscreen-workarounds) ─────────
+# Per-game "checkbox"-vlaggen voor native Wayland-games met het bekende
+# "geluid maar geen beeld"-symptoom. Bewaard in
+# GAMEPREFIXES_ROOT/<GAME_NAME>/flags.conf (buiten template-scripts → de
+# desktop-regenerate raakt het niet). De checkbox-waarden worden vertaald
+# naar de bestaande GUI_*-override-afspraak: GUI_GAMESCOPE bestond al,
+# GUI_NATIVE_WINDOWED is nieuw en wordt alleen door de native-tak van
+# game_launch gelezen. Native-only: voor GAME_NATIVE!=1 doet het hele
+# subsysteem niets.
+
+FLAGS_WINDOWED=0
+FLAGS_GAMESCOPE=0
+
+_flags_file() {
+  echo "${PREFIX_DIR:-$GAMEPREFIXES_ROOT/$GAME_NAME}/flags.conf"
+}
+
+_flags_read() {
+  FLAGS_WINDOWED=0
+  FLAGS_GAMESCOPE=0
+  FLAGS_SNAPSHOT=0
+  [ "${GAME_NATIVE:-0}" = "1" ] || return 0
+  local f k v
+  f="$(_flags_file)"
+  [ -r "$f" ] || return 0
+  while IFS='=' read -r k v; do
+    case "$k" in
+      windowed) FLAGS_WINDOWED="${v:-0}" ;;
+      gamescope) FLAGS_GAMESCOPE="${v:-0}" ;;
+      snapshot) FLAGS_SNAPSHOT="${v:-0}" ;;
+    esac
+  done < "$f"
+}
+
+_flags_write() {
+  [ "${GAME_NATIVE:-0}" = "1" ] || return 0
+  local f
+  f="$(_flags_file)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || { _log "Kan $(dirname "$f") niet aanmaken."; return 1; }
+  printf 'windowed=%s\ngamescope=%s\nsnapshot=%s\n' "${1:-0}" "${2:-0}" "${3:-0}" > "$f"
+  _log "GUI-checkboxes opgeslagen: windowed=${1:-0}, gamescope=${2:-0}, snapshot=${3:-0} ($f)."
+}
+
+# Startwaarden voor het initiële vinkje: state-bestand, anders script-defaults.
+_flags_defaults() {
+  _flags_read
+  if [ "$FLAGS_WINDOWED" != "1" ] && [[ " ${GAME_NATIVE_EXTRA_ARGS:-}" == *" +vid_fullscreen 0"* ]]; then
+    FLAGS_WINDOWED=1
+  fi
+  [ "$FLAGS_WINDOWED" = "1" ] || FLAGS_WINDOWED=0
+  [ "$FLAGS_GAMESCOPE" = "1" ] || { [ "${GAME_GAMESCOPE:-0}" = "1" ] && FLAGS_GAMESCOPE=1; }
+  [ "$FLAGS_GAMESCOPE" = "1" ] || FLAGS_GAMESCOPE=0
+  [ "$FLAGS_SNAPSHOT" = "1" ] || FLAGS_SNAPSHOT=0
+}
+
+# Vlaggen vertalen naar GUI_*-overrides vóór de launch (checkbox wint van de
+# statische script-defaults). Alleen door game_main aangeroepen (native).
+# Bestaat flags.conf niet, dan heeft de gebruiker geen keuze gemaakt → de
+# script-defaults blijven gewoon van kracht (geen GUI_* gezet).
+_flags_apply() {
+  [ "${GAME_NATIVE:-0}" = "1" ] || return 0
+  [ -r "$(_flags_file)" ] || return 0
+  _flags_read
+  GUI_NATIVE_WINDOWED="$FLAGS_WINDOWED"
+  GUI_GAMESCOPE="$FLAGS_GAMESCOPE"
+  [ "$FLAGS_WINDOWED" = "1" ] && _log "GUI-checkbox 'windowed' actief (+vid_fullscreen 0)."
+  [ "$FLAGS_GAMESCOPE" = "1" ] && _log "GUI-checkbox 'gamescope' actief (nested fullscreen)."
+}
+
+# Checkbox-editor: terminal → whiptail; GUI → kdialog, fallback zenity.
+# Géén automatische popup: alleen via --gui-flags of het Instellingen-icoon.
+_flags_editor() {
+  if [ "${GAME_NATIVE:-0}" != "1" ]; then
+    _log "GUI-checkboxes zijn alleen voor native Linux-games (GAME_NATIVE=1)."
+    return 0
+  fi
+  _flags_defaults
+  local w1 w2 w3 sel
+  [ "$FLAGS_WINDOWED" = "1" ] && w1="ON" || w1="OFF"
+  [ "$FLAGS_GAMESCOPE" = "1" ] && w2="ON" || w2="OFF"
+  [ "$FLAGS_SNAPSHOT" = "1" ] && w3="ON" || w3="OFF"
+
+  if [ -t 1 ] && command -v whiptail >/dev/null 2>&1; then
+    sel="$(whiptail --title "$GAME_NAME - Instellingen" --checklist \
+      "Zwart beeld maar wel geluid? (native Wayland-game)" 14 80 3 \
+      "windowed" "Windowed starten: +vid_fullscreen 0" "$w1" \
+      "gamescope" "Nested fullscreen via gamescope" "$w2" \
+      "snapshot" "Backup-snapshot vóór elke start (testzone)" "$w3" 2>/dev/null)" || return 0
+    printf '%s' "$sel" | grep -qw "windowed" && FLAGS_WINDOWED=1 || FLAGS_WINDOWED=0
+    printf '%s' "$sel" | grep -qw "gamescope" && FLAGS_GAMESCOPE=1 || FLAGS_GAMESCOPE=0
+    printf '%s' "$sel" | grep -qw "snapshot" && FLAGS_SNAPSHOT=1 || FLAGS_SNAPSHOT=0
+  elif command -v kdialog >/dev/null 2>&1; then
+    sel="$(kdialog --title "$GAME_NAME - Instellingen" --separate-output --checklist \
+      "Zwart beeld maar wel geluid? (native Wayland-game)" \
+      "windowed" "Windowed starten: +vid_fullscreen 0" "$w1" \
+      "gamescope" "Nested fullscreen via gamescope" "$w2" \
+      "snapshot" "Backup-snapshot vóór elke start (testzone)" "$w3" 2>/dev/null)" || return 0
+    printf '%s' "$sel" | grep -qw "windowed" && FLAGS_WINDOWED=1 || FLAGS_WINDOWED=0
+    printf '%s' "$sel" | grep -qw "gamescope" && FLAGS_GAMESCOPE=1 || FLAGS_GAMESCOPE=0
+    printf '%s' "$sel" | grep -qw "snapshot" && FLAGS_SNAPSHOT=1 || FLAGS_SNAPSHOT=0
+  elif command -v zenity >/dev/null 2>&1; then
+    # zenity --list --checklist geeft geen row-kwalitatieve uitvoer → per
+    # optie een losse --question (boolean netjes teruggeven, geen parse).
+    local q1 q2 q3
+    zenity --question --title="$GAME_NAME - Instellingen" \
+      --text="Windowed starten (+vid_fullscreen 0) aanzetten?" && q1=1 || q1=0
+    zenity --question --title="$GAME_NAME - Instellingen" \
+      --text="Nested fullscreen via gamescope aanzetten?" && q2=1 || q2=0
+    zenity --question --title="$GAME_NAME - Instellingen" \
+      --text="Backup-snapshot vóór elke start aanzetten (testzone)?" && q3=1 || q3=0
+    FLAGS_WINDOWED="$q1"
+    FLAGS_GAMESCOPE="$q2"
+    FLAGS_SNAPSHOT="$q3"
+  else
+    _log "Geen whiptail/kdialog/zenity beschikbaar; checkbox-editor overgeslagen."
+    return 0
+  fi
+  _flags_write "$FLAGS_WINDOWED" "$FLAGS_GAMESCOPE" "$FLAGS_SNAPSHOT"
+}
+
+# Wil deze game (native) bij haar start een backup-snapshot? Alleen wanneer de
+# gebruiker dat in de GUI expliciet heeft aangevinkt (snapshot=1 in flags.conf).
+_flags_want_snapshot() {
+  [ "${GAME_NATIVE:-0}" = "1" ] || return 1
+  [ -r "$(_flags_file)" ] || return 1
+  [ "$(awk -F= '/^snapshot=/{print $2}' "$(_flags_file)" 2>/dev/null)" = "1" ]
+}
+
+# Na een snapshot-VIA-icon (stdout geen tty, dus _log onzichtbaar) een
+# GUI-melding tonen over het verse backup-dir.
+_flags_snapshot_notify() {
+  [ -t 1 ] && return 0
+  # Vanuit game-gui.py (GAME_GUI=1) is stdout geen tty maar streamt het
+  # terminal-frame de log wél zichtbaar → géén extra popup.
+  [ "${GAME_GUI:-0}" = "1" ] && return 0
+  local latest
+  latest="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backup"
+  latest="$(ls -dt "$latest"/ver1_* 2>/dev/null | head -1)"
+  if command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "Backup-snapshot" --msgbox "Snapshot klaar: ${latest##*/}" 2>/dev/null
+  elif command -v zenity >/dev/null 2>&1; then
+    zenity --info --title "Backup-snapshot" --text "Snapshot klaar: ${latest##*/}" 2>/dev/null
+  fi
+}
+
 game_launch() {
   _neutralize_overlays
   _neutralize_xalia
+  _neutralize_sdl3_dynapi
   _log "Starten: ${GAME_EXE:-${GAME_NATIVE_SHELL:-}$GAME_NATIVE_CMD} (prefix: $PREFIX_PATH)"
 
   cd "$GAME_DIR" || _fail "Kan niet naar $GAME_DIR"
@@ -571,7 +732,46 @@ game_launch() {
     local native_start=()
     [ -n "${GAME_NATIVE_SHELL:-}" ] && native_start+=("$GAME_NATIVE_SHELL")
     native_start+=("$GAME_NATIVE_CMD")
-    "${gscope[@]}" "${native_start[@]}" "$@"
+
+    # GAME_NATIVE_SDL_DRIVER=auto|wayland|x11 — 'x11' dwingt GLX via
+    # XWayland af. Betrouwbaarste pad voor oudere GL-engines op een
+    # Wayland-sessie (bv. NVIDIA/hybride fullscreen → zwart scherm met
+    # audio). Alleen toegepast als er écht een Wayland-sessie draait én
+    # XWayland bereikbaar is (DISPLAY + socket); anders netjes auto laten.
+    local sdl_drv="${GAME_NATIVE_SDL_DRIVER:-auto}"
+    if [ "$sdl_drv" = "x11" ] && [ "$XDG_SESSION_TYPE" = "wayland" ] \
+       && [ -n "${DISPLAY:-}" ] && [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; then
+      export SDL_VIDEODRIVER="x11"
+      _log "SDL-videodriver gedwongen: x11 (XWayland-GLX)."
+    elif [ "$sdl_drv" = "wayland" ] && [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+      export SDL_VIDEODRIVER="wayland"
+      _log "SDL-videodriver gedwongen: wayland."
+    elif [ "$sdl_drv" != "auto" ]; then
+      _log "GAME_NATIVE_SDL_DRIVER='$sdl_drv' niet toepasbaar → auto (sessie:${XDG_SESSION_TYPE:-?}, DISPLAY:${DISPLAY:--})."
+    fi
+
+    # GAME_NATIVE_EXTRA_ARGS="..." — engine-argumenten vóór de user-args
+    # ingeschoven (bewust ongequoot: woord-splitsing net als bij wine).
+    local native_args=()
+    [ -n "${GAME_NATIVE_EXTRA_ARGS:-}" ] && native_args+=($GAME_NATIVE_EXTRA_ARGS)
+
+    # GUI_NATIVE_WINDOWED (checkbox in Instellingen): "1" → +vid_fullscreen 0
+    # forceren; "0" → het token ook uit een statische script-default strippen.
+    if [ "${GUI_NATIVE_WINDOWED:-}" = "1" ]; then
+      local _has=0 _a
+      for _a in "${native_args[@]}"; do [ "$_a" = "+vid_fullscreen" ] && _has=1; done
+      [ "$_has" = "1" ] || native_args+=("+vid_fullscreen" "0")
+    elif [ "${GUI_NATIVE_WINDOWED:-}" = "0" ]; then
+      local _i=0 _na=()
+      while [ "$_i" -lt "${#native_args[@]}" ]; do
+        if [ "${native_args[$_i]}" = "+vid_fullscreen" ]; then
+          _i=$((_i + 2)); continue
+        fi
+        _na+=("${native_args[$_i]}"); _i=$((_i + 1))
+      done
+      native_args=("${_na[@]}")
+    fi
+    "${gscope[@]}" "${native_start[@]}" "${native_args[@]}" "$@"
     return $?
   fi
 
@@ -695,13 +895,34 @@ Categories=Game;
 EOF
   chmod +x "$apps_dir/$GAME_NAME.desktop"
   _log "Shortcut aangemaakt: $apps_dir/$GAME_NAME.desktop${icon_path:+ (icon: $icon_path)}"
+
+  # Native-only extra-icoon: "Instellingen" roept de GUI-checkboxes op
+  # (windowed / gamescope) zonder de game te starten.
+  if [ "${GAME_NATIVE:-0}" = "1" ]; then
+    local name_key
+    name_key="$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')"
+    cat > "$apps_dir/${name_key}-instellingen.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$GAME_NAME - Instellingen
+Exec="$launcher" --gui-flags
+${icon_path:+Icon=$icon_path}
+Terminal=false
+Categories=Settings;
+EOF
+    chmod +x "$apps_dir/${name_key}-instellingen.desktop"
+    _log "Instellingen-shortcut aangemaakt: $apps_dir/${name_key}-instellingen.desktop"
+  fi
 }
 
 # ── Backup-rotatie ───────────────────────────────────────────
-# Vóór elke uitvoerbare run: snapshot van de projectmap naar
-# backup/ver1_<datum>_<tijd>; ver1→ver2→ver3, oudste weg (max 3). De nieuwste
-# werkversie blijft in de hoofdmap. De backup-map zelf wordt uitgesloten om
-# recursie te voorkomen (de grote GE-Proton-tar.restant zit daar).
+# ── Backup-rotatie ───────────────────────────────────────────
+# Snapshot van de projectmap naar backup/ver1_<datum>_<tijd>; ver1→ver2→ver3,
+# oudste weg (max 3). Enkel door de testomgeving: env SNAPSHOT_BACKUP=1 of de
+# GUI-checkbox 'snapshot' (per-game). De game-gui/normale game-start maakt
+# géén snapshot: die moet onmiddellijk starten (volle rsync van de projectmap
+# kost tientallen seconden op trage mounts). De backup-map zelf wordt
+# uitgesloten om recursie te voorkomen.
 _snapshot_backup() {
   local base backup_root ts d
   base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -728,8 +949,28 @@ _snapshot_backup() {
 # ── Hoofd-flow ───────────────────────────────────────────────
 game_main() {
   game_init
+
+  # GUI-checkbox-editor: alleen expliciet via --gui-flags of het
+  # "Instellingen"-desktop-icoon. Géén automatische popup bij start.
+  if [ "${1:-}" = "--gui-flags" ]; then
+    _flags_editor
+    return $?
+  fi
+
   _acquire_lock
-  _snapshot_backup
+  # Backups: ALLEEN in testomgeving. Testroute = env SNAPSHOT_BACKUP=1, óf de
+  # GUI-checkbox 'snapshot' (per-game aangevinkt in de Instellingen). Normale
+  # game-start maakt géén snapshot: die moet onmiddellijk starten (volle rsync
+  # kost tientallen seconden op trage mounts).
+  if [ "${SNAPSHOT_BACKUP:-0}" = "1" ]; then
+    _log "Testzone: SNAPSHOT_BACKUP=1 → backup-snapshot vóór deze run."
+    _snapshot_backup
+    _flags_snapshot_notify
+  elif _flags_want_snapshot; then
+    _log "Testzone: GUI-checkbox 'snapshot' actief → backup-snapshot vóór deze run."
+    _snapshot_backup
+    _flags_snapshot_notify
+  fi
   if [ "${PROTON_ENABLED:-0}" != "1" ]; then
     # Wacht alleen op een wineserver van DEZE prefix, en nooit langer dan 10 s.
     # Zonder scope blokkeert `wineserver -w` op élke actieve wine op het systeem
@@ -752,5 +993,6 @@ game_main() {
     _log "Pre-launch-hook: $hook"
     _run_hook "$hook"
   done
+  _flags_apply
   game_launch "$@"
 }
