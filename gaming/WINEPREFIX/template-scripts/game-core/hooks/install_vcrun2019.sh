@@ -95,15 +95,16 @@ hook_run() {
   _vc_set_overrides
 
   # ── 2b. Windows-versie herstellen ──────────────────────────
-  # winetricks' vcrun2019 zet de prefix op win7. Op win7 kiest Cyberpunk
-  # 2077 zijn bundled bin/x64/d3d12on7/d3d12.dll (D3D12-on-D3D11-vangnet)
-  # en crasht (c0000005). Op win10 gaat de game de native D3D12-route
-  # (vkd3d-proton) en draait hij normaal — zoals de referentie-prefix.
-  # Bewust onderdeel van deze module: het corrigeert het bijeffect van
-  # de winetricks-receptuur. Alleen de standaard wine-stable is hier
-  # beschikbaar (Proton's runner zet zijn eigen versie bij de launch).
-  WINEPREFIX="$PREFIX_PATH" winecfg -v win10 >/dev/null 2>&1 || true
-  _log "hook(install-vcrun2019): Windows-versie hersteld naar win10."
+  # winetricks' vcrun2019 zet de prefix op win7. Default corrigeren we
+  # naar win10 (zie Cyberpunk-dossier). Per game overrulbaar via
+  # VC_RUNTIME_WINVER: oudere Unity/CODEX-games draaien juist op win7
+  # (referentie-prefix Automation Empire was 6.1) en crashen op win10
+  # met "Invalid window handle". Bewust onderdeel van deze module: het
+  # corrigeert het bijeffect van de winetricks-receptuur. Alleen de
+  # standaard wine-stable is hier beschikbaar (Proton's runner zet zijn
+  # eigen versie bij de launch).
+  WINEPREFIX="$PREFIX_PATH" winecfg -v "${VC_RUNTIME_WINVER:-win10}" >/dev/null 2>&1 || true
+  _log "hook(install-vcrun2019): Windows-versie hersteld naar ${VC_RUNTIME_WINVER:-win10}."
 
   # ── 3. Validatie + auto-heal (incl. winetricks-vangnet) ──
   if ! _vc_heal; then

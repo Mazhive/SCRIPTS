@@ -18,13 +18,22 @@
 #                     NIET exporteren als je de array-vorm gebruikt — bash-arrays
 #                     overleven `export` niet naar subprocessen, wél binnen dit
 #                     script omdat game-common.sh gesourced wordt, niet uitgevoerd.
+#   PRE_LAUNCH_HOOKS=( "wacom-detect" ) — extra modules die BIJ ÉLKE START vóór
+#                     game_launch lopen (i.p.v. alleen bij provision). Zelfde
+#                     module-mechaniek als PROVISION_HOOKS; gebruikt voor
+#                     run-vaste fouten/keuzes die niet aan een verse prefix
+#                     gebonden zijn (bijv. inputfixes die per prefix idempotent
+#                     zijn). Zelfde regel: array-vorm NIET exporteren.
 #   VC_RUNTIME_METHOD="winetricks"|"redist"                 — levering van de
 #                     VC++2019-runtime door de hook-module install-vcrun2019
 #                     (winetricks = referentie-receptuur; redist = gebundelde game-
 #                     redist als primair, winetricks als vangnet). Per game in te
 #                     stellen, alleen waar de opstarttest het nodig maakt.
 #   PREFIX_ROOT="$HOME/GAMEPREFIXES"                          — waar prefixes wonen
-#   CREATE_DESKTOP_SHORTCUT="1"                               — .desktop aanmaken
+#   CREATE_DESKTOP_SHORTCUT="1"                               — .desktop aanmaken op
+#                                                                $HOME/Desktop (vaste
+#                                                                default; overrulebaar
+#                                                                via DESKTOP_SHORTCUT_DIR)
 #   PROTON_ENABLED="1" / PROTON_PIN="GE-Proton..."            — start via Proton-runner
 #   STEAM_APPID="255710"                                      — echte Steam-appid (voor
 #                                                                ProtonFixes-herkenning;
@@ -35,6 +44,18 @@
 #   GAME_KEEP_XALIA="1"                                       — GE-Proton's xalia (gamepad-UI-
 #                                                                hulp voor launchers/installers)
 #                                                                wél aan laten (default: uit)
+#   GAME_GAMESCOPE="1"                                       — de launch wrappen via gamescope
+#                                                                (nested compositor: Wayland-
+#                                                                inputfix, FSR/scaling). Alleen
+#                                                                bij een Wayland-sessie én een
+#                                                                aanwezige gamescope; anders log
+#                                                                en gewoon starten. gamescope
+#                                                                zelf installeren gebeurt via de
+#                                                                optionele hook install_gamescope.
+#   GAME_GAMESCOPE_RES="WxH"                                 — interne gamescope-res vastzetten
+#                                                                (reproduceerbaar). Leeg/uit =
+#                                                                auto-detect van de actieve
+#                                                                monitormode via xrandr.
 #
 # Richtlijn: de prefix wordt ALTIJD lokaal en vers aangemaakt (wineboot -i);
 # er wordt nooit een bestaande prefix gekopieerd of vanaf de NFS-share
@@ -60,11 +81,100 @@ _require_var() {
   [ -n "$val" ] || _fail "Variabele '$name' is niet gezet in het game-script."
 }
 
+# ── Voortgangs-indicator ─────────────────────────────────────
+# Lange winetricks-stappen (dotnet48, vcrun, ...) duren minuten zonder enige
+# output. Zonder terugkoppeling denkt een gebruiker dat het script hangt en
+# start hij een tweede instantie. Deze generieke indicator print tijdens zulke
+# stappen elke 10 s een statusregel op dezelfde terminalregel (CR), en is
+# daardoor voor ELKE game en ELKE installatie actief. (De Python-GUI krijgt
+# later een eigen voortgangsweergave; dit is de terminal-vangnet-laag.)
+BUSY_PID=""
+BUSY_TS=""
+BUSY_LABEL=""
+
+_busy_start() {
+  BUSY_LABEL="$1"
+  BUSY_TS="$(date +%s)"
+  printf '\n [game] bezig met %s... ' "$BUSY_LABEL"
+  (
+    local ts="$BUSY_TS"
+    while :; do
+      sleep 10
+      printf '\r [game] bezig met %s... (al %ss)   ' "$BUSY_LABEL" "$(( $(date +%s) - ts ))"
+    done
+  ) &
+  BUSY_PID=$!
+}
+
+_busy_stop() {
+  local s
+  [ -n "$BUSY_PID" ] && kill "$BUSY_PID" 2>/dev/null
+  # wait retourneert de kill-status (143) van de net-gestopte voortgangs-
+  # indicator; onder set -euo pipefail zou dat de provisioning afbreken.
+  wait "$BUSY_PID" 2>/dev/null || true
+  BUSY_PID=""
+  s=$(( $(date +%s) - BUSY_TS ))
+  printf '\r [game] klaar: %s (duurde %ss)\n' "$BUSY_LABEL" "$s"
+}
+
+# ── Single-instance lock ─────────────────────────────────────
+# Voorkomt dat iemand een tweede launcher start terwijl de eerste nog
+# provisiont of de game draait (bv. omdat de voortgangsindicator nog niet
+# gezien is). Lock via PID-bestand: geen extra gereedschap nodig. Een oude
+# lock van een niet-draaiend proces wordt stil opgeruimd.
+_acquire_lock() {
+  local lf="$PREFIX_DIR/.launch.lock" pid
+  mkdir -p "$PREFIX_DIR"
+  if [ -f "$lf" ]; then
+    pid="$(cat "$lf" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      _fail "Er draait al een launcher voor $GAME_NAME (PID $pid). Wacht tot die klaar is of stop hem eerst."
+    fi
+    _log "Oude lock verwijderd ($lf, PID ${pid:-onbekend} draait niet meer)."
+    rm -f "$lf"
+  fi
+  echo "$$" >"$lf"
+  _LOCK_FILE="$lf"
+  _release_lock() { rm -f "${_LOCK_FILE:-}"; }
+  trap _release_lock EXIT INT TERM
+}
+
+# ── Sessie-detectie (wayland / x11 / headless) ───────────────
+# Wayland: WAYLAND_DISPLAY gezet, of XDG_SESSION_TYPE="wayland" (DISPLAY kan
+# op Wayland-sessies nog steeds bestaan als XWayland-display). X11: alleen
+# DISPLAY. Geen van beide → headless (geen grafische sessie beschikbaar).
+_session_flavor() {
+  if [ -n "${WAYLAND_DISPLAY:-}" ] || [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+    echo wayland
+  elif [ -n "${DISPLAY:-}" ]; then
+    echo x11
+  else
+    echo headless
+  fi
+}
+
+# ── Distro-detectie (voor host-level hooks) ──────────────────
+# Geeft de pakketbeheerder-familie terug (apt/pacman/dnf/zypper), zodat
+# host-tools (bv. gamescope) per distro geïnstalleerd kunnen worden.
+# Val op "unknown" als er niets herkend wordt; de caller beslist dan zelf.
+_distro_pkg() {
+  local id=""
+  if [ -r /etc/os-release ]; then
+    id="$(awk -F= '/^ID=/{gsub(/["\r]/, "", $2); print $2}' /etc/os-release 2>/dev/null)"
+  fi
+  case "$id" in
+    cachyos|arch|archlinux|manjaro|endeavouros) echo pacman ;;
+    debian|ubuntu|linuxmint|pop|elementary|zorin) echo apt ;;
+    fedora|rhel|centos|rocky|almalinux) echo dnf ;;
+    opensuse|opensuse-leap|opensuse-tumbleweed|sles|sled) echo zypper ;;
+    *) echo unknown ;;
+  esac
+}
+
 # ── Initialisatie ────────────────────────────────────────────
 game_init() {
   _require_var GAME_NAME
   _require_var GAME_DIR
-  _require_var GAME_EXE
 
   PREFIX_DIR="$GAMEPREFIXES_ROOT/$GAME_NAME"
   PREFIX_PATH="$PREFIX_DIR/pfx"
@@ -75,11 +185,28 @@ game_init() {
   # hooks) of een losse string (één hook); scalar toegang zou bij een
   # array stil alleen element [0] pakken en de rest laten vallen.
   HOOKS="${PROVISION_HOOKS[*]:-}"
+  # Zelfde array/string-regel voor de pre-launch-hooks (bij élke start).
+  PRE_HOOKS="${PRE_LAUNCH_HOOKS[*]:-}"
 
-  command -v wine >/dev/null 2>&1 || _fail "wine niet gevonden in PATH."
+  # Native Linux-games (GAME_NATIVE=1) hebben géén Wine-prefix nodig,
+  # dus ook geen wine in PATH en geen GAME_EXE — alleen GAME_DIR.
+  if [ "${GAME_NATIVE:-0}" != "1" ]; then
+    _require_var GAME_EXE
+    command -v wine >/dev/null 2>&1 || _fail "wine niet gevonden in PATH."
+  fi
+
+  # Een grafische sessie is nodig om een prefix aan te maken én te starten
+  # (wineboot/winetricks hebben een display nodig). Bindend vóór wineboot:
+  # op bijv. een SSH-terminal zonder X-forwarding faalt wine anders laat en
+  # cryptisch; hier komt een duidelijke fout.
+  if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    _fail "Geen grafische sessie (DISPLAY noch WAYLAND_DISPLAY is gezet); kan geen prefix aanmaken of game starten."
+  fi
 
   [ -d "$GAME_DIR" ] || _fail "Game-map niet bereikbaar: $GAME_DIR"
-  [ -f "$GAME_EXE" ] || _fail "Game executable niet gevonden: $GAME_EXE"
+  if [ "${GAME_NATIVE:-0}" != "1" ]; then
+    [ -f "$GAME_EXE" ] || _fail "Game executable niet gevonden: $GAME_EXE"
+  fi
 }
 
 # ── Marker/provision status ──────────────────────────────────
@@ -162,7 +289,9 @@ _run_hook() {
   # shellcheck disable=SC1090
   . "$module"
   if declare -f hook_run >/dev/null 2>&1; then
+    _busy_start "hook $name"
     hook_run
+    _busy_stop
   else
     _log "Hook-module '$name' definieert geen hook_run()."
     return 1
@@ -171,6 +300,14 @@ _run_hook() {
 
 game_provision() {
   _provision_fresh
+
+  # Registry volledig naar disk flushen vóór de game start. Wine schrijft
+  # zijn registry pas echt weg als de wineserver stopt; sommige games lezen
+  # bij launch direct wat er op disk staat (bleek bij de win10-waarde en de
+  # winebus-keys). Dit is de generieke voorziening dáárvoor.
+  _busy_start "registry-flush (wineserver -w)"
+  WINEPREFIX="$PREFIX_PATH" wineserver -w 2>/dev/null || true
+  _busy_stop
 
   echo "$SCRIPT_VERSION" > "$MARKER"
   _log "Provision klaar (marker v$SCRIPT_VERSION)."
@@ -184,8 +321,10 @@ _provision_fresh() {
 
   # gecko/mono-dialogen onderdrukken (niet nodig voor de meeste games)
   export WINEDLLOVERRIDES="mscoree=;mshtml=${WINEDLLOVERRIDES:-}"
+  _busy_start "wineboot -i"
   env WINEPREFIX="$PREFIX_PATH" WINEARCH="$PREFIX_ARCH" wineboot -i || \
-    _fail "wineboot mislukt (prefix: $PREFIX_PATH)"
+    { _busy_stop; _fail "wineboot mislukt (prefix: $PREFIX_PATH)"; }
+  _busy_stop
 
   for hook in ${HOOKS:-}; do
     _log "Hook: $hook"
@@ -361,11 +500,81 @@ _neutralize_xalia() {
 }
 
 # ── Game starten ─────────────────────────────────────────────
+# Bepaalt of deze run via gamescope moet lopen. GUI-override:
+# GUI_GAMESCOPE="1|0" heeft voorrang op GAME_GAMESCOPE, zodat de checkbox
+# in de launcher-GUI per klik gamescope aan/uit kan zetten ook als een
+# game-script zelf "1" of "0" hardcodeert (zelfde patroon als
+# GUI_DESKTOP_SHORTCUT bij game_make_desktop).
+_gscope_want() {
+  if [ -n "${GUI_GAMESCOPE:-}" ]; then
+    [ "${GUI_GAMESCOPE:-0}" = "1" ] && return 0 || return 1
+  fi
+  [ "${GAME_GAMESCOPE:-0}" = "1" ]
+}
+
+# Vul GSCOPE_ARGV met de gamescope-wrap-argumenten als gamescope actief is
+# (gewenst én Wayland-sessie én vindbare gamescope). Anders leeg → game wordt
+# gewoon gestart. Herbruikbaar door game_launch én door eigen launch-scripts
+# (bv. automationempire) die geen game_main gebruiken.
+GSCOPE_ARGV=()
+_gscope_argv() {
+  GSCOPE_ARGV=()
+  _gscope_want || return 0
+  if [ "$(_session_flavor)" != "wayland" ] || ! command -v gamescope >/dev/null 2>&1; then
+    _log "GAME_GAMESCOPE=1 overgeslagen (geen Wayland-sessie maar $(_session_flavor))."
+    return 0
+  fi
+  # GAME_GAMESCOPE_RES="WxH": interne gamescope-res reproduceerbaar zetten op
+  # de native monitormode (voorkomt dat gamescope zelf iets laags/gepatched
+  # kiest, bv. 720p, op een 1080p/1440p-scherm). Niet gezet? → gratis
+  # auto-detect van de actieve monitormode (xrandr); ook dat mislukt? →
+  # gamescope laat zelf kiezen.
+  GSCOPE_ARGV=( gamescope -f )
+  local _gcalc=""
+  if [[ "${GAME_GAMESCOPE_RES:-}" =~ ^[0-9]+x[0-9]+$ ]]; then
+    _gcalc="$GAME_GAMESCOPE_RES"
+  else
+    _gcalc="$(xrandr --current 2>/dev/null | awk '/\*/{ for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+x[0-9]+$/) { print $i; exit } }')"
+    if [[ "$_gcalc" =~ ^[0-9]+x[0-9]+$ ]]; then
+      _log "GAME_GAMESCOPE_RES niet gezet → native-mode auto-detect: $_gcalc"
+    else
+      _gcalc=""
+      _log "WARN: GAME_GAMESCOPE_RES niet gezet én geen native-mode detecteerbaar; gamescope mag zelf kiezen. Tip: export GAME_GAMESCOPE_RES='WxH'."
+    fi
+  fi
+  if [[ "$_gcalc" =~ ^[0-9]+x[0-9]+$ ]]; then
+    GSCOPE_ARGV+=( -W "${_gcalc%x*}" -H "${_gcalc#*x}" )
+  fi
+  GSCOPE_ARGV+=( -- )
+  _log "Gamescope-wrap actief (Wayland-sessie): $(command -v gamescope) res=${_gcalc:-auto}"
+}
+
 game_launch() {
   _neutralize_overlays
   _neutralize_xalia
-  _log "Starten: $GAME_EXE (prefix: $PREFIX_PATH)"
+  _log "Starten: ${GAME_EXE:-${GAME_NATIVE_SHELL:-}$GAME_NATIVE_CMD} (prefix: $PREFIX_PATH)"
+
   cd "$GAME_DIR" || _fail "Kan niet naar $GAME_DIR"
+
+  # GAME_GAMESCOPE=1: de launch wrappen via gamescope (nested compositor).
+  # Dit lost op Wayland-lagen de bekende XWayland-inputbug op (muis wordt
+  # wel gezien maar kliks/toetsen niet — Proton#6845) en levert FSR/scaling.
+  # Alleen actief bij een Wayland-sessie én een vindbare gamescope; anders
+  # netjes melden en gewoon starten (de game kan alsnog werken).
+  _gscope_argv
+  local gscope=()
+  [ "${#GSCOPE_ARGV[@]}" -gt 0 ] && gscope=("${GSCOPE_ARGV[@]}")
+
+  if [ "${GAME_NATIVE:-0}" = "1" ]; then
+    # Native Linux-game: géén Proton/wine — draai het native commando
+    # (optioneel via een shell indien het een script/binair nodig heeft).
+    local native_start=()
+    [ -n "${GAME_NATIVE_SHELL:-}" ] && native_start+=("$GAME_NATIVE_SHELL")
+    native_start+=("$GAME_NATIVE_CMD")
+    "${gscope[@]}" "${native_start[@]}" "$@"
+    return $?
+  fi
+
   if [ "${PROTON_ENABLED:-0}" = "1" ]; then
     local runner compatdir clientdir appid
     # Vereiste runner garanderen: is een PROTON_PIN gezet maar die versie
@@ -406,32 +615,86 @@ game_launch() {
     export STEAM_COMPAT_APP_ID="$appid"
     export SteamAppId="$appid"
     export WINEPREFIX="$PREFIX_PATH"
-    "$runner" waitforexitandrun "$GAME_EXE" "$@"
+    "${gscope[@]}" "$runner" waitforexitandrun "$GAME_EXE" "$@"
   else
-    WINEPREFIX="$PREFIX_PATH" ${WINE_CMD:-wine} "$GAME_EXE" "$@"
+    WINEPREFIX="$PREFIX_PATH" "${gscope[@]}" ${WINE_CMD:-wine} "$GAME_EXE" "$@"
   fi
 }
 
 # ── .desktop-shortcut ────────────────────────────────────────
 # Maakt een .desktop-icoon aan zodat de game zonder terminal/GUI te starten is.
-# Doelmap is door de Python-GUI beïnvloedbaar: geef de plek als argument
-# (${1}) of via DESKTOP_SHORTCUT_DIR; default is $HOME/.local/share/applications.
+# Vaste standaard-afleverplek: de Desktop-map van de gebruiker
+# ($HOME/Desktop). De Python-GUI krijgt hiervoor een inputveld dat via
+# DESKTOP_SHORTCUT_DIR (of het eerste argument) een andere doelmap
+# meegeeft; de default blijft altijd de Desktop.
+# Icon: DESKTOP_ICON_PATH (expliciet) of auto-resolve via gameicons/.
+# Auto-resolve gebruikt dezelfde matchregel als de GUI (_resolve_icon):
+# exacte bestandsnaam → genormaliseerde naam (althans) → containment
+# (stem IN key of key IN stem). Zo pakt bv. "CitiesSkylines" ook
+# "Cities&Skylines.png" en "AstroidBountyHunter" ook "astroid.bounty.hunter.png".
+# GUI-override: GUI_DESKTOP_SHORTCUT="1|0" heeft voorrang op CREATE_DESKTOP_SHORTCUT
+# (de launcher-scripts hardcoderen "1", zodat de GUI-checkbox erdoorheen kan).
 game_make_desktop() {
-  [ "${CREATE_DESKTOP_SHORTCUT:-0}" = "1" ] || return 0
-  local base apps_dir launcher
+  local gui_flag
+  gui_flag="${GUI_DESKTOP_SHORTCUT:-}"
+  if [ -n "$gui_flag" ]; then
+    [ "$gui_flag" = "1" ] || return 0
+  else
+    [ "${CREATE_DESKTOP_SHORTCUT:-0}" = "1" ] || return 0
+  fi
+  local base apps_dir launcher icon_path f norm key_norm
   base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   launcher="${GAME_LAUNCHER:-$base/game-launchers/${GAME_NAME}.sh}"
-  apps_dir="${1:-${DESKTOP_SHORTCUT_DIR:-$HOME/.local/share/applications}}"
+  apps_dir="${1:-${DESKTOP_SHORTCUT_DIR:-$HOME/Desktop}}"
   mkdir -p "$apps_dir"
+
+  if [ -n "${DESKTOP_ICON_PATH:-}" ]; then
+    icon_path="$DESKTOP_ICON_PATH"
+  else
+    local icons_dir="$base/game-launchers/gameicons"
+    if [ -d "$icons_dir" ]; then
+      # Genormaliseerde sleutel van GAME_NAME (alleen a-z0-9, lowercase).
+      key_norm="$(echo "$GAME_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')"
+      # Eerste pass: exact + containerscan op genormaliseerde stempjes.
+      for f in "$icons_dir"/*; do
+        [ -f "$f" ] || continue
+        stem="${f##*/}"
+        stem="${stem%.*}"
+        norm="$(echo "$stem" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')"
+        if [ "$norm" = "$key_norm" ]; then icon_path="$f"; break; fi
+      done
+      if [ -z "${icon_path:-}" ]; then
+        for f in "$icons_dir"/*; do
+          [ -f "$f" ] || continue
+          stem="${f##*/}"
+          stem="${stem%.*}"
+          norm="$(echo "$stem" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')"
+          if [ -n "$norm" ] && { case "$norm" in *"$key_norm"*) true;; *) false;; esac; } \
+             || { [ -n "$key_norm" ] && case "$key_norm" in *"$norm"*) true;; *) false;; esac; }; then
+            icon_path="$f"
+            break
+          fi
+        done
+      fi
+      # Laatste redmiddel: directe naam-match (zonder normalisatie).
+      for ext in png jpg jpeg; do
+        f="$icons_dir/${GAME_NAME}.${ext}"
+        [ -f "$f" ] && icon_path="$f" && break
+      done
+    fi
+  fi
+
   cat > "$apps_dir/$GAME_NAME.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$GAME_NAME
 Exec="$launcher"
+${icon_path:+Icon=$icon_path}
 Terminal=false
 Categories=Game;
 EOF
-  _log "Shortcut aangemaakt: $apps_dir/$GAME_NAME.desktop"
+  chmod +x "$apps_dir/$GAME_NAME.desktop"
+  _log "Shortcut aangemaakt: $apps_dir/$GAME_NAME.desktop${icon_path:+ (icon: $icon_path)}"
 }
 
 # ── Backup-rotatie ───────────────────────────────────────────
@@ -465,15 +728,29 @@ _snapshot_backup() {
 # ── Hoofd-flow ───────────────────────────────────────────────
 game_main() {
   game_init
+  _acquire_lock
   _snapshot_backup
   if [ "${PROTON_ENABLED:-0}" != "1" ]; then
-    command -v wineserver >/dev/null 2>&1 && wineserver -w 2>/dev/null
+    # Wacht alleen op een wineserver van DEZE prefix, en nooit langer dan 10 s.
+    # Zonder scope blokkeert `wineserver -w` op élke actieve wine op het systeem
+    # (bv. een lopende installatie van een andere game) — dat hangt de launch.
+    # Bij een verse provision bestaat de prefix-map nog niet → regel slaat over.
+    if [ -d "$PREFIX_PATH" ]; then
+      timeout 10 env WINEPREFIX="$PREFIX_PATH" wineserver -w 2>/dev/null || true
+    fi
   fi
-  if game_needs_provision; then
+  if [ "${GAME_NATIVE:-0}" = "1" ]; then
+    _log "Native Linux-game: geen Wine-prefix/provision nodig."
+  elif game_needs_provision; then
     game_provision
   else
     _log "Prefix is al geprovisiond (v$(cat "$MARKER"))."
   fi
   game_make_desktop
+  PRE_HOOK_RUN=1
+  for hook in ${PRE_HOOKS:-}; do
+    _log "Pre-launch-hook: $hook"
+    _run_hook "$hook"
+  done
   game_launch "$@"
 }
