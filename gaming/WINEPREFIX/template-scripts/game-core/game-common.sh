@@ -70,6 +70,9 @@ set -u
 GAMEPREFIXES_ROOT="${PREFIX_ROOT:-$HOME/GAMEPREFIXES}"
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hooks"
 
+# ── Installatiepad-resolutie (gedeelde bron van waarheid, zie game-conf.sh) ──
+source "$(dirname "${BASH_SOURCE[0]}")/game-conf.sh"
+
 # ── Helpers ──────────────────────────────────────────────────
 _log() { echo " [game] $*"; }
 _fail() { echo " [game] FOUT: $*" >&2; exit 1; }
@@ -175,6 +178,7 @@ _distro_pkg() {
 game_init() {
   _require_var GAME_NAME
   _require_var GAME_DIR
+  game_resolve_install_dir
 
   PREFIX_DIR="$GAMEPREFIXES_ROOT/$GAME_NAME"
   PREFIX_PATH="$PREFIX_DIR/pfx"
@@ -713,7 +717,7 @@ game_launch() {
   _neutralize_overlays
   _neutralize_xalia
   _neutralize_sdl3_dynapi
-  _log "Starten: ${GAME_EXE:-${GAME_NATIVE_SHELL:-}$GAME_NATIVE_CMD} (prefix: $PREFIX_PATH)"
+  _log "Starten: ${GAME_EXE:-${GAME_NATIVE_SHELL:-} ${GAME_NATIVE_CMD}} (prefix: $PREFIX_PATH)"
 
   cd "$GAME_DIR" || _fail "Kan niet naar $GAME_DIR"
 
@@ -730,8 +734,17 @@ game_launch() {
     # Native Linux-game: géén Proton/wine — draai het native commando
     # (optioneel via een shell indien het een script/binair nodig heeft).
     local native_start=()
+    # Kale GAME_NATIVE_CMD zonder pad: relatief maken aan cwd (= GAME_DIR ná
+    # cd hierboven). Zonder '/' en zonder './' doet bash een PATH-lookup en
+    # mist de binary ("command not found"); alleen wanneer er écht een bestand
+    # in de game-map staat, anders PATH-commando laten zoals bedoeld.
+    local native_cmd="$GAME_NATIVE_CMD"
+    case "$native_cmd" in
+      */*) : ;;
+      *)   [ -e "./$native_cmd" ] && native_cmd="./$native_cmd" ;;
+    esac
     [ -n "${GAME_NATIVE_SHELL:-}" ] && native_start+=("$GAME_NATIVE_SHELL")
-    native_start+=("$GAME_NATIVE_CMD")
+    native_start+=("$native_cmd")
 
     # GAME_NATIVE_SDL_DRIVER=auto|wayland|x11 — 'x11' dwingt GLX via
     # XWayland af. Betrouwbaarste pad voor oudere GL-engines op een

@@ -14,26 +14,29 @@ import signal
 from pathlib import Path
 
 from PySide6.QtCore import (QEasingCurve, QProcess, QPointF, QRectF, Qt,
-                            QTimer, QVariantAnimation)
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetrics, QIcon,
-                           QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame,
-                               QGraphicsObject, QGraphicsScene, QGraphicsView,
-                               QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QSplitter, QTabBar, QVBoxLayout,
+                            QTimer, QVariantAnimation, Signal)
+from PySide6.QtGui import (QAction, QColor, QFont, QFontDatabase, QFontMetrics,
+                           QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPixmap, QRadialGradient)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog,
+                               QFrame, QGraphicsObject, QGraphicsScene,
+                               QGraphicsView, QGridLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QMainWindow, QMessageBox, QPlainTextEdit,
+                               QPushButton, QSplitter, QTabBar, QVBoxLayout,
                                QWidget)
 
 BASE = Path(__file__).resolve().parent
 LAUNCHERS_DIR = BASE / "template-scripts" / "game-launchers"
 ICONS_DIR = LAUNCHERS_DIR / "gameicons"
 
-CARD_W = 190.0
-CARD_H = 190.0
+APP_VERSION = "1.8"
+
+CARD_W = 200.0
+CARD_H = 200.0
 NAME_H = 40.0
 CARD_CORNER = 18.0
-SPACING = 185.0
+SPACING = 195.0
 SCENE_H = 470.0
 CARD_Y = SCENE_H / 2.0 - 45.0
 
@@ -71,21 +74,39 @@ ICON_OVERRIDES = {
 
 STYLE = """
 QMainWindow, QWidget { background-color: #171a20; }
-QFrame#header { background-color: #1e222a; border-bottom: 1px solid #2a2f3a; }
+QFrame#header { background-color: transparent; }
+QMenuBar { background-color: #1e222a; color: #cdd6e0; border-bottom: 1px solid #2a2f3a; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 6px; }
+QMenuBar::item:selected { background-color: #2c333f; }
+QMenu { background-color: #1e222a; color: #cdd6e0; border: 1px solid #2a2f3a; }
+QMenu::item { padding: 6px 22px; border-radius: 6px; }
+QMenu::item:selected { background-color: #35404f; }
 QLabel { color: #e8ecf2; }
-QLabel#title { font-size: 19px; font-weight: 700; color: #ffffff; }
+QLabel#title { font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: 2px; }
 QLabel#subtitle { color: #9aa4b2; }
 QLabel#panelTitle { font-size: 14px; font-weight: 600; color: #ffffff; }
-QFrame#optionsFrame { background-color: #1e222a; border-bottom: 1px solid #2a2f3a; }
+QFrame#optionsFrame {
+    background-color: #1b202a; border-radius: 12px;
+}
 QCheckBox {
     color: #cdd6e0; font-size: 13px; spacing: 8px;
 }
-QCheckBox::indicator {
-    width: 17px; height: 17px; border: 1px solid #39414f;
-    border-radius: 4px; background-color: #101318;
+QMessageBox {
+    background-color: #1e222a;
 }
-QCheckBox::indicator:hover { border-color: #4c5870; }
-QCheckBox::indicator:checked { background-color: #2e7d43; border-color: #389454; }
+QMessageBox QLabel {
+    color: #f2f5f9; font-size: 14px;
+}
+QPushButton {
+    background-color: #3a4350; color: #ffffff;
+    border: 1px solid #556279; border-radius: 6px;
+    padding: 7px 18px; font-weight: 600; font-size: 13px;
+}
+QPushButton:hover { background-color: #48546a; }
+QPushButton:pressed { background-color: #2c333f; }
+QMessageBox QPushButton:default {
+    background-color: #35608c; border-color: #6ba5d8;
+}
 QListWidget {
     background-color: #101318; color: #dbe0e8; border: 1px solid #2a2f3a;
     border-radius: 8px; padding: 4px;
@@ -100,6 +121,41 @@ QSplitter::handle { background-color: #2a2f3a; }
 """
 
 
+CONF_PATH = Path.home() / ".config" / "gamelauncher" / "installpaths.conf"
+
+
+def load_paths():
+    """Leest GAME_DIR_<GAME_NAME>="<pad>" uit installpaths.conf (zelfde bestand
+    en key-formaat als game-conf.sh aan de shell-kant)."""
+    paths = {}
+    if not CONF_PATH.is_file():
+        return paths
+    try:
+        for raw in CONF_PATH.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if not raw or "=" not in raw:
+                continue
+            key, value = raw.split("=", 1)
+            key, value = key.strip(), value.strip()
+            value = value.strip("\"'")
+            if key.startswith("GAME_DIR_"):
+                paths[key[len("GAME_DIR_"):].upper()] = value
+    except OSError:
+        return paths
+    return paths
+
+
+def save_paths(paths):
+    """Schrijft alle installatiepaden naar installpaths.conf (idempotent)."""
+    try:
+        CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f'GAME_DIR_{k.upper()}="{v}"' for k, v in sorted(paths.items())]
+        CONF_PATH.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _norm(name):
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
@@ -109,6 +165,27 @@ class Game:
         self.key = key
         self.script = script_path
         self._icon = None
+        self._default_dir = None
+
+    @property
+    def default_dir(self):
+        if self._default_dir is None:
+            self._default_dir = self._extract_default_dir()
+        return self._default_dir
+
+    @property
+    def stored_dir(self):
+        # Conf-file-key = GAME_DIR_<GAME_NAME> (mixed case, zoals geëxporteerd
+        # door het launcher-script); game.key is de lowercased bestandsnaam.
+        return load_paths().get(self.key.upper())
+
+    def _extract_default_dir(self):
+        try:
+            text = self.script.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        m = re.search(r'^export\s+GAME_DIR="(.*)"', text, re.MULTILINE)
+        return m.group(1) if m else None
 
     @property
     def display_name(self):
@@ -248,7 +325,50 @@ class CoverItem(QGraphicsObject):
             super().mousePressEvent(event)
 
 
+class HaloBackdrop(QGraphicsObject):
+    """Subtiel omgevingslicht achter de rollerkaarten.
+
+    Zachte radiale gradient zonder harde rand — vervaagt naar alpha 0 aan de
+    randen. Gepositioneerd onder alle items in de scene; volgt de breedte via
+    set_bounds() vanuit CarouselView._layout().
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._rect = QRectF()
+
+    def set_bounds(self, x, y, w, h):
+        self._rect = QRectF(x, y, w, h)
+        self.prepareGeometryChange()
+
+    def boundingRect(self):
+        return self._rect
+
+    def paint(self, painter, option, widget=None):
+        if self._rect.isNull() or self._rect.width() <= 0 or self._rect.height() <= 0:
+            return
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        w = self._rect.width()
+        h = self._rect.height()
+        painter.save()
+        painter.translate(self._rect.center())
+        # Y-as schalen zodat een cirkel visueel de platte band-ellips wordt.
+        # De gradient rekent dan mee in de geschaalde ruimte: ieder punt op de
+        # omtrek ligt exact op straal w/2 → stop 1.0 → alpha 0, zonder harde rand.
+        painter.scale(1.0, h / w)
+        grad = QRadialGradient(0.0, 0.0, w / 2.0)
+        grad.setColorAt(0.0, QColor(255, 255, 255, 12))
+        grad.setColorAt(0.5, QColor(255, 255, 255, 6))
+        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.setBrush(grad)
+        painter.drawEllipse(QPointF(0.0, 0.0), w / 2.0, w / 2.0)
+        painter.restore()
+
+
 class CarouselView(QGraphicsView):
+    index_changed = Signal(int)
+
     def __init__(self, games, parent=None):
         super().__init__(parent)
         self.games = games
@@ -269,6 +389,9 @@ class CarouselView(QGraphicsView):
 
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
+
+        self._halo = HaloBackdrop()
+        self.scene.addItem(self._halo)
 
         for i, game in enumerate(games):
             item = CoverItem(game, i)
@@ -294,6 +417,9 @@ class CarouselView(QGraphicsView):
         cx = self._width() / 2.0
         cy = SCENE_H / 2.0 - 45.0
         half = int(len(self.items) / 2) + 1
+        self._halo.set_bounds(30, cy - CARD_H / 2 - 20,
+                              max(self._width() - 60, 0), CARD_H + NAME_H + 40)
+        self._halo.setZValue(-half - 2)
         for item in self.items:
             d = item.index - t
             if abs(d) > half + 1:
@@ -323,12 +449,17 @@ class CarouselView(QGraphicsView):
     def select_index(self, index):
         self.move_to(float(index))
 
+    def _set_index(self, new):
+        if new != self.index:
+            self.index = new
+            self.index_changed.emit(new)
+
     def move_to(self, target):
         target = max(0.0, min(float(len(self.items) - 1), target))
         if not hasattr(self, "_anim"):
             self._target = target
             self._t = target
-            self.index = int(round(target))
+            self._set_index(int(round(target)))
             self.refresh()
             return
         self._anim.stop()
@@ -344,7 +475,7 @@ class CarouselView(QGraphicsView):
 
     def _on_anim(self, value):
         self._t = float(value)
-        self.index = int(round(self._t))
+        self._set_index(int(round(self._t)))
         self.refresh()
 
     def wheelEvent(self, event):
@@ -426,7 +557,7 @@ class GameRun:
 
 
 class MainWindow(QMainWindow):
-    CAROUSEL_H = 420
+    CAROUSEL_H = 430
 
     def __init__(self, games):
         super().__init__()
@@ -434,9 +565,11 @@ class MainWindow(QMainWindow):
         self.runs = {}
         self.current_run = None
         self.run_tabs = None
-        self.setWindowTitle("Game Launcher")
+        self._dir_edits = {}
+        self.setWindowTitle(f"Game Launcher v{APP_VERSION}")
         self.resize(1360, 840)
         self.setStyleSheet(STYLE)
+        self._build_menu()
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -451,29 +584,52 @@ class MainWindow(QMainWindow):
 
         if games:
             self._select(0)
+            self._sync_dir_field()
             self.setWindowIcon(QIcon(str(BASE / "gamelauncherv1.png")))
+
+    def _build_menu(self):
+        menubar = self.menuBar()
+        help_menu = menubar.addMenu("Help")
+
+        help_action = QAction("Help (bediening)", self)
+        help_action.triggered.connect(self._show_help)
+        about_action = QAction(f"Over Game Launcher v{APP_VERSION}", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(help_action)
+        help_menu.addAction(about_action)
+
+    def _show_help(self):
+        QMessageBox.information(
+            self, "Game Launcher",
+            "Bediening:\n"
+            " · Muiswiel / pijltjes: bladeren door de games\n"
+            " · Klik op een icoon of Enter: starten\n"
+            " · Installatiemap: eigen pad of leeg laten (standaard uit script)\n"
+            " · Checkboxen: Desktop-icoon, Gamescope, SDL3, bevestigen, snapshot")
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, "Over Game Launcher",
+            f"<b>Game Launcher</b> — versie {APP_VERSION}<br>"
+            "Roller-GUI voor de WINEPREFIX launcher-scripts.<br><br>"
+            "Scant template-scripts/game-launchers/*.sh en start games "
+            "via de bijbehorende launcher.")
 
     def _build_header(self):
         header = QFrame()
         header.setObjectName("header")
-        lay = QHBoxLayout(header)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(16)
-
-        title_box = QVBoxLayout()
-        title_box.setSpacing(2)
-        title = QLabel("Game Launcher")
+        lay = QVBoxLayout(header)
+        lay.setContentsMargins(0, 6, 0, 2)
+        title = QLabel("VAN VOORN GAME LAUNCHER")
         title.setObjectName("title")
-        title_box.addWidget(title)
-        subtitle = QLabel("Start games via de WINEPREFIX launcher-scripts")
-        subtitle.setObjectName("subtitle")
-        title_box.addWidget(subtitle)
-        lay.addLayout(title_box, 1)
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
         return header
 
     def _build_carousel_banner(self):
         self.carousel = CarouselView(self.games)
         self.carousel.launch_selected = lambda i: self._on_launch(i)
+        self.carousel.index_changed.connect(lambda i: self._on_carousel_changed(i))
         self.carousel.setFixedHeight(self.CAROUSEL_H)
         self.carousel.setMinimumWidth(600)
 
@@ -494,8 +650,8 @@ class MainWindow(QMainWindow):
         frame = QFrame()
         frame.setObjectName("optionsFrame")
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(4)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(8)
 
         self.cb_desktop = QCheckBox("Desktop-icoon op het bureaublad")
         self.cb_desktop.setChecked(True)
@@ -505,10 +661,72 @@ class MainWindow(QMainWindow):
         self.cb_confirm = QCheckBox("Bevestigen vóór start")
         self.cb_confirm.setChecked(True)
         self.cb_snapshot = QCheckBox("Backup-snapshot vóór elke start (testzone)")
-        for cb in (self.cb_desktop, self.cb_gamescope, self.cb_sdl3,
-                   self.cb_confirm, self.cb_snapshot):
-            lay.addWidget(cb)
+
+        # Grid van 3 kolommen: schaalt vanzelf naar rechts voor extra
+        # checkboxen (een 6e valt in kolom 3, een 7e/8e start een nieuwe rij).
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(6)
+        checks = (self.cb_desktop, self.cb_gamescope, self.cb_sdl3,
+                  self.cb_confirm, self.cb_snapshot)
+        for i, cb in enumerate(checks):
+            grid.addWidget(cb, i // 3, i % 3)
+        lay.addLayout(grid)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(6)
+        self.dir_label = QLabel("Installatiemap")
+        self.dir_edit = QLineEdit()
+        self.dir_edit.setPlaceholderText("(standaard uit launcher-script)")
+        self.dir_edit.textChanged.connect(self._on_dir_edited)
+        self.dir_button = QPushButton("Bladeren…")
+        self.dir_button.clicked.connect(self._browse_dir)
+        dir_row.addWidget(self.dir_label)
+        dir_row.addWidget(self.dir_edit, 1)
+        dir_row.addWidget(self.dir_button)
+        lay.addLayout(dir_row)
         return frame
+
+    def _on_carousel_changed(self, index):
+        self._sync_dir_field()
+
+    def _on_dir_edited(self, text):
+        game = self._selected_game()
+        if game is None:
+            return
+        if text.strip() == game.default_dir:
+            self._dir_edits.pop(game.key, None)
+        else:
+            self._dir_edits[game.key] = text
+
+    def _selected_game(self):
+        if not self.games or self.carousel is None:
+            return None
+        idx = min(self.carousel.index, len(self.games) - 1)
+        return self.games[idx]
+
+    def _stored_dir(self, game):
+        return game.stored_dir
+
+    def _sync_dir_field(self):
+        game = self._selected_game()
+        if game is None:
+            self.dir_label.setText("Installatiemap")
+            self.dir_edit.clear()
+            return
+        self.dir_label.setText(f"Installatiemap {game.display_name}")
+        value = self._dir_edits.get(
+            game.key,
+            self._stored_dir(game) or game.default_dir or "")
+        if self.dir_edit.text() != (value or ""):
+            self.dir_edit.setText(value or "")
+
+    def _browse_dir(self):
+        game = self._selected_game()
+        start = self.dir_edit.text().strip() or (game.default_dir if game else "")
+        chosen = QFileDialog.getExistingDirectory(self, "Kies installatiemap", start)
+        if chosen:
+            self.dir_edit.setText(chosen)
 
     def _build_terminal(self):
         frame = QFrame()
@@ -580,6 +798,19 @@ class MainWindow(QMainWindow):
             "SNAPSHOT_BACKUP": "1" if self.cb_snapshot.isChecked() else "0",
             "GAME_GUI": "1",
         }
+        chosen_dir = self._dir_edits.get(game.key, "").strip()
+        conf_key = game.key.upper()
+        paths = load_paths()
+        if chosen_dir and chosen_dir != game.default_dir:
+            paths[conf_key] = chosen_dir
+            extra_env["GUI_GAME_DIR"] = chosen_dir
+        else:
+            paths.pop(conf_key, None)
+            # Geen GUI_GAME_DIR bij standaard-pad; de core lost dan de
+            # script-default op. stored_dir mag NIET terugvallen naar
+            # een oude conf-waarde die we zojuist verwijderden.
+        self._dir_edits.pop(game.key, None)
+        save_paths(paths)
         run = GameRun(game, self._run_status_changed, self._run_output,
                       extra_env=extra_env,
                       banner=f"== {game.display_name} — installatie wordt uitgevoerd ==")

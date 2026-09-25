@@ -211,6 +211,7 @@ python3 /mnt/VG_00/PUBLIC-LIBRARY/PRE-INSTALLED-GAMES/WINEPREFIX/game-gui.py
   - **Start met Gamescope** (standaard UIT) → stuurt `GUI_GAMESCOPE=1|0`
   - **SDL3-fallback aan** (standaard AAN) → stuurt `GUI_SDL3_DYNAMIC_API_OFF=1|0` (zie settings-tabel)
   - **Bevestigen vóór start** (standaard AAN) → Ja/Nee-dialog bij elke klik
+  - **Installatiemap** (per game, optioneel) → tekstveld + "Bladeren…" naast de checkboxes; toont de geldige map van de geselecteerde game (conf → script-default) en stelt een **per-game** installatiepad in via `installpaths.conf` (zie Configuratie)
 - **Terminal-frame**: live output (groen op zwart, monospace)
 
 **Gedrag:**
@@ -234,11 +235,45 @@ python3 /mnt/VG_00/PUBLIC-LIBRARY/PRE-INSTALLED-GAMES/WINEPREFIX/game-gui.py
 | `GUI_GAMESCOPE` | *(niet gezet)* | GUI-override van `GAME_GAMESCOPE` (`1`/`0`) |
 | `GAME_SDL3_DYNAMIC_API_OFF` | `1` | Per-script: zet `SDL3_DYNAMIC_API=0` (ingesloten SDL-route) om de dynapi-warning/hard-fail te voorkomen. `0` = uit |
 | `GUI_SDL3_DYNAMIC_API_OFF` | *(niet gezet)* | GUI-override van `GAME_SDL3_DYNAMIC_API_OFF` (`1`/`0`) |
+| `GUI_GAME_DIR` | *(niet gezet)* | GUI-override van `GAME_DIR` (beperkt tot GUI-launch): pad afkomstig uit het installatiemap-veld, ook weggeschreven naar `installpaths.conf` |
+| `GAME_GUI` | `1` | Door de GUI geëxporteerd: onderdrukt de "eerst GUI / weetje" melding |
 
 **Eerste start:** de GUI plaatst eenmalig `~/Desktop/GameLauncher.desktop` (met `gamelauncherv1.png`, `chmod +x`). Bestaat die al, dan blijft hij ongemoeid.
 
+### Installatiepaden (`installpaths.conf`)
+
+Per-game installatiemappen zijn configureerbaar zonder de launcher-scripts aan te
+passen. Opbouw:
+
+```
+~/.config/gamelauncher/installpaths.conf
+GAME_DIR_<GAME_NAME>="/mnt/.../WINDOWSGAMES/<GameMap>"
+```
+
+Een `GAME_DIR_<GAME_NAME>`-regel (key = `GAME_NAME` van het launcher-script,
+case-insensitief gelezen) overschrijft de hardcoded `GAME_DIR` in dat script.
+
+**Override-volgorde** (`game_resolve_install_dir` in `game-core/game-conf.sh`):
+
+1. `GUI_GAME_DIR` (GUI-launch met ander pad, opgegeven in het installatiemap-veld)
+2. `installpaths.conf` (`GAME_DIR_<GAME_NAME>`)
+3. script-default (`export GAME_DIR=...` in het launcher-script)
+
+De GUI schrijft het veld-effect direct naar `installpaths.conf` (lege optie verwijdert
+de regel). Los de launcher aan → `game_resolve_install_dir` afgeleid
+(`GAME_EXE_REL="${GAME_EXE#"$GAME_DIR"/}"`) zodat één gedeelde engine-launch
+(`game_common`) overal mee kan.
+
 ### Native games
-Geen prefix/provision nodig: zet `GAME_NATIVE="1"` + `GAME_NATIVE_CMD`. Totale flow is dan: lock → backup-snapshot → desktop-file (+ icon) → launch (optioneel gamescope-wrap).
+Geen prefix/provision nodig: zet `GAME_NATIVE="1"` + `GAME_NATIVE_CMD`. Totale flow is dan: lock → backup-snapshot → desktop-file (+ icon) → launch (optioneel gamescope-wrap). Het installatiepad is óók hier configureerbaar (`game_resolve_install_dir`).
+
+### Automation Empire (eigen prefix-markering)
+`automationempire.sh` probeert geen Wine via de core, maar beheert een eigen prefix
+met een **marker-gate** op versie: `$PREFIX_DIR/.provisioned` bevat `SCRIPT_VERSION`.
+- Marker **ontbreekt** of heeft een **andere versie** dan `SCRIPT_VERSION="1"` → één
+  idempotente provision (prefix aanmaken + `winecfg -v win10`) en marker schrijven.
+- Marker **klopt** → direct starten, geen provision.
+`SCRIPT_VERSION` verhogen = bewust de prefix herbouwen na een config-wijziging.
 
 ---
 

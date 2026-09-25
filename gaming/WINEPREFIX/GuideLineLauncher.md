@@ -85,16 +85,44 @@ Lokaal (per gebruiker, eigenaar)
    ```
 2. Het script roept de core aan; de core controleert of
    `~/GAMEPREFIXES/AngryBirds/.provisioned` bestaat en of de versie klopt.
-   - **Niet bestaat (of oude versie)** → prefix lokaal en **vers** aanmaken
-     (`wineboot -i`, eventuele extra stappen zoals VC++2019 via `PROVISION_HOOKS`),
-     eigenaar = huidige gebruiker, marker schrijven. Bij Proton-games richt
-     Proton bij de eerste start zelf de rest in ("Upgrading prefix from None
-     to GE-Proton...") — dxvk/vkd3d/nvapi/ntsync.
-   - **Bestaat al** → direct door naar het starten van de game.
-   - Er wordt ook meteen een `.desktop`-icoon aangemaakt/bijgewerkt.
+- **Niet bestaat (of oude versie)** → prefix lokaal en **vers** aanmaken
+    (`wineboot -i`, eventuele extra stappen zoals VC++2019 via `PROVISION_HOOKS`),
+    eigenaar = huidige gebruiker, marker schrijven. Bij Proton-games richt
+    Proton bij de eerste start zelf de rest in ("Upgrading prefix from None
+    to GE-Proton...") — dxvk/vkd3d/nvapi/ntsync.
+  - **Bestaat al** → direct door naar het starten van de game.
+  - Er wordt ook meteen een `.desktop`-icoon aangemaakt/bijgewerkt.
+  - **Installatiepad:** vóór het provisionen past `game_resolve_install_dir`
+    (`game-core/game-conf.sh`) desgewenst `GAME_DIR` aan (zie "Configuratie-laag"
+    hieronder). De prefix blijft altijd lokaal (`~/GAMEPREFIXES/<Game>/`), ongeacht
+    waar de game-map staat.
 3. De game draait dus vanaf de NFS-share, de prefix staat lokaal.
 4. **Na de eerste keer provisionen is er geen script/terminal/GUI meer nodig** —
-   het `.desktop`-icoon start de game direct met de lokale prefix.
+    het `.desktop`-icoon start de game direct met de lokale prefix.
+
+## Configuratie-laag (installatiepaden)
+
+De scripts draaien overal en zonder GUI, maar per-game installatiemappen zijn
+per gebruiker overschrijfbaar zonder de launcher-scripts aan te passen.
+
+- **Config-bestand:** `~/.config/gamelauncher/installpaths.conf`
+- **Regel-formaat:** `GAME_DIR_<GAME_NAME>="<pad>"` (key = `GAME_NAME` van het
+  launcher-script, case-insensitief gelezen).
+- **Override-volgorde** (`game_resolve_install_dir`):
+  1. `GUI_GAME_DIR` — alleen GUI-launch (installatiemap-veld in de GUI)
+  2. `installpaths.conf` — per-gebruiker-pad
+  3. script-default — hardcoded `export GAME_DIR=...` in het launcher-script
+- De GUI schrijft het veld-effect naar `installpaths.conf` (leeg = regel weg),
+  desktop-shortcuts en directe script-runs lezen exact hetzelfde bestand.
+
+### Marker-versie (herprovisionen)
+
+Elk werkende prefix heeft een markerbestand `$PREFIX_DIR/.provisioned` waarin de
+scriptversie staat. De core vergelijkt die met de huidige `SCRIPT_VERSION`:
+ongelijk (of afwezig) = opnieuw provisionen. Games zonder core-provision
+(bijv. Automation Empire) gebruiken **dezelfde versie-marker** voor hun eigen
+prefix-beheer: `SCRIPT_VERSION` verhogen = bewust herbouwen. Zie
+`workflowreadme.md` onder "Automation Empire".
 
 ## Modulair ontwerp (belangrijk)
 
