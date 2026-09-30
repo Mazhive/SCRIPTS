@@ -1,0 +1,7 @@
+##|v1|## partition table of /dev/sdd
+# on Tuesday, 29 September 2026 11:55:32 AST
+type: "msdos"
+align: "sector"
+
+# number start end type roles label flags
+1;8192;62513151;fat32;primary;"";""
