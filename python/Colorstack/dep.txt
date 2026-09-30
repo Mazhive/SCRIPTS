@@ -1,0 +1,98 @@
+# Dependency List / Afhankelijkhedenlijst / Lista de dependencias
+# Voor het draaien van ColorStack op Linux en Windows / To run ColorStack on Linux and Windows / Para ejecutar ColorStack en Linux y Windows
+
+## Python Package Dependencies / Python Pakket Afhankelijkheden / Dependencias de Paquetes Python
+
+### Core Requirements (Linux & Windows)
+```
+pip install PyQt6 opencv-python numpy scikit-learn svgwrite trimesh shapely svgpathtools pillow
+```
+
+### Linux (Debian/Ubuntu/Mint) - System Packages
+```bash
+sudo apt update
+sudo apt install python3-pyqt6 python3-pyqt6.qtsvg python3-opencv python3-numpy python3-sklearn python3-svgwrite python3-trimesh python3-shapely python3-svgpathtools python3-pil
+```
+
+### Linux (Arch/Manjaro) - System Packages
+```bash
+sudo pacman -S python-pyqt6 python-opencv python-numpy python-scikit-learn python-svgwrite python-trimesh python-shapely python-svgpathtools python-pillow
+```
+
+### Linux (Fedora) - System Packages
+```bash
+sudo dnf install python3-qt6 python3-opencv python3-numpy python3-scikit-learn python3-svgwrite python3-trimesh python3-shapely python3-svgpathtools python3-pillow
+```
+
+### Windows - pip Only (Recommended)
+```cmd
+pip install PyQt6 opencv-python numpy scikit-learn svgwrite trimesh shapely svgpathtools pillow
+```
+
+### Windows - Conda (Alternative)
+```cmd
+conda install -c conda-forge pyqt opencv numpy scikit-learn svgwrite trimesh shapely svgpathtools pillow
+```
+
+## Windows Compatibility Notes / Windows Compatibiliteitsnotities / Notas de Compatibilidad Windows
+
+### ✅ Fully Compatible / Volledig Compatibel / Totalmente Compatible
+- PyQt6 (GUI framework)
+- opencv-python (computer vision)
+- numpy (numerical computing)
+- scikit-learn (KMeans clustering)
+- svgwrite (SVG generation)
+- trimesh (3D mesh operations)
+- svgpathtools (SVG path parsing)
+- pillow (image processing)
+
+### ⚠️ Potential Issues / Mogelijke Problemen / Posibles Problemas
+
+**1. PyQt6.QtSvg (SVG Rasterization)**
+- Used in `_rasterize_svg()` function for SVG preview
+- Requires Qt SVG plugin (`qsvg.dll`)
+- **Fix**: Included in standard PyQt6 Windows wheels. If missing, install via:
+  ```cmd
+  pip install --upgrade PyQt6
+  ```
+  Or copy `qsvg.dll` from `PyQt6/Qt6/plugins/iconengines/` to app directory.
+
+**2. shapely (Geometry Operations)**
+- Requires GEOS C library
+- **Fix**: Included in modern shapely wheels (>=2.0). If `GEOS` error occurs:
+  ```cmd
+  pip install --upgrade shapely
+  ```
+  Or install GEOS separately: `conda install -c conda-forge geos`
+
+**3. trimesh (3D Mesh Operations)**
+- Pure Python with optional dependencies (pyembree, rtree, etc.)
+- Core functionality works without optional deps
+- **Fix**: For better performance, install optional deps:
+  ```cmd
+  pip install pyembree rtree
+  ```
+
+**4. File Paths**
+- Uses `pathlib.Path` for cross-platform paths ✅
+- Uses `os.fspath()` for compatibility ✅
+
+**4. SVG Rasterization Fallback**
+- If `PyQt6.QtSvg` unavailable, SVG preview falls back gracefully
+- App continues to work without SVG rasterization
+
+## Verification / Verificatie / Verificación
+
+Test installation:
+```bash
+python -c "import PyQt6, cv2, numpy, sklearn, svgwrite, trimesh, shapely, svgpathtools, PIL; print('All dependencies OK')"
+```
+
+## Version Info / Versie Info / Info de Versión
+- App: ColorStack V1.0.8
+- Python: 3.10+ recommended
+- PyQt6: 6.4+
+- Tested on: Linux (Ubuntu 22.04+, Arch), Windows 10/11
+
+---
+*Laatst bijgewerkt: 2026 / Last updated: 2026 / Última actualización: 2026*
