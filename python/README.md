@@ -4,7 +4,7 @@
 
 Split images into color layers using KMeans clustering in LAB color space, then export as print-ready SVG or OBJ files for multi-color 3D printing.
 
-![ColorStack Screenshot](https://github.com/Mazhive/SCRIPTS/python/docs/screenshot.png)
+![ColorStack Screenshot](https://github.com/Mazhive/SCRIPTS/python/docs/2026-09-30_16-07.png)
 
 ---
 
