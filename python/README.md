@@ -252,8 +252,8 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ## Support
 
-- **Issues** — [GitHub Issues](https://github.com/yourusername/ColorStack/issues)
-- **Discussions** — [GitHub Discussions](https://github.com/yourusername/ColorStack/discussions)
+- **Issues** — [GitHub Issues](https://github.com/mazhive/ColorStack/issues)
+- **Discussions** — [GitHub Discussions](https://github.com/mazhive/ColorStack/discussions)
 
 ---
 
